@@ -1,7 +1,8 @@
 # MacRuby 0.10
 
-framework 'AppKit'
+framework 'Cocoa'
 framework 'AudioToolbox'
+load_bridge_support_file 'Files.bridgesupport'
 
 class WaveHeart
   
@@ -97,24 +98,50 @@ class WaveHeart
     
     def load(file_path)
       audio_file_url = CFURLCreateFromFileSystemRepresentation(
-        NULL, file_path, file_path.size, false )
+        nil, file_path, file_path.size, false )
       result = AudioFileOpenURL(
-        audio_file_url, KfsRdPerm, 0, @state.audio_file )
+        audio_file_url, FsRdPerm, 0, @state.audio_file )
       CFRelease(audio_file_url)
       
-      data_format_size = @state.data_format.size
+      # get @data_format_size
+      AudioFileGetPropertyInfo(
+        @state.audio_file, KAudioFilePropertyDataFormat, @data_format_size, @is_writable )
+      
+      # get @state.data_format
       AudioFileGetProperty(
-        @state.audio_file, KAudioFilePropertyDataFormat, data_format_size, @state.data_format )
+        @state.audio_file, KAudioFilePropertyDataFormat, @data_format_size, @state.data_format )
       
       init_queue
+      
+      # get @max_packet_size
+      AudioFileGetProperty(
+        @state.audio_file, KAudioFilePropertyPacketSizeUpperBound, @property_size, @max_packet_size )
+      
+      @state.buffer_byte_size, @state.num_packets_to_read = derive_buffer_size(
+        @state.data_format, @max_packet_size, 0.5 )
     end
     
     def init_queue
       return if @state.queue
       AudioQueueNewOutput(
-        @state.data_format, handle_output_buffer, @state, 
-        CFRunLoopGetCurrent, KCFRunLoopCommonModes, 0,
+        @state.data_format, :handle_output_buffer, @state, 
+        CFRunLoopGetCurrent(), KCFRunLoopCommonModes, 0,
         @state.queue )
+    end
+    
+    def allocate_packet_desc
+      is_format_vbr = (
+        @state.data_format.mBytesPerPacket == 0 ||
+        @state.data_format.mFramesPerPacket == 0 )
+      
+      # if is_format_vbr
+      #    @state.packet_descs =
+      #      (AudioStreamPacketDescription*) malloc (
+      #        @state.num_packets_to_read * sizeof (AudioStreamPacketDescription)
+      #        );
+      #  else
+      #    @state.packet_descs = nil;
+      #  end
     end
   end
 end
