@@ -2,29 +2,44 @@
 
 framework 'Cocoa'
 framework 'AudioToolbox'
-load_bridge_support_file 'Files.bridgesupport'
 
 class WaveHeart
   
   # An AudioQueue pushing an audio stream into CoreAudio HAL.
   #
   class Vessel
-    attr_reader :state
-    
-    State = Struct.new('State', 
+    attr_reader( 
+      :ptr,                       # Pointer to self              
       :data_format,               # AudioStreamBasicDescription  
+      :data_format_ptr,           # AudioStreamBasicDescriptionPointer  
       :queue,                     # AudioQueueRef                
+      :queue_ptr,                 # AudioQueueRefPointer         
       :buffers,                   # AudioQueueBufferRef          
       :audio_file,                # AudioFileID                  
-      :buffer_byte_size,          # UInt32                       
+      :audio_file_ptr,            # AudioFileIDPointer           
+      :out_buffer_size_ptr,       # UInt32                       
+      :max_packet_size_ptr,       # UInt32                       
       :current_packet,            # SInt64                       
       :num_packets_to_read,       # UInt32                       
       :packet_descs,              # AudioStreamPacketDescription 
       :is_running )               # bool                         
     
     def initialize(file_path=nil)
-      @state = State.new
+      @ptr = Pointer.new(:object)
+      @ptr.assign(self)
+      @queue_ptr = Pointer.new('^{OpaqueAudioQueue}')
+      @audio_file_ptr = Pointer.new(AudioFileID.type)
+      @data_format_ptr = Pointer.new(AudioStreamBasicDescription.type)
+      @data_format_ptr.assign(AudioStreamBasicDescription.new)
+      @max_packet_size_ptr = Pointer.new 'I'
+      @out_buffer_size_ptr = Pointer.new 'I'
+      @num_packets_to_read_ptr = Pointer.new 'I'
       load(file_path) if file_path
+    end
+    
+    def stop
+      AudioQueueStop(@queue, false)
+      @is_running = false
     end
   
     # Callback from the AudioQueue to refill a playback buffer.
@@ -34,28 +49,26 @@ class WaveHeart
       queue,                      # AudioQueueRef
       buffer )                    # AudioQueueBufferRef
     
-      return unless @state.is_running
-      num_of_packets = @state.num_packets_to_read
+      return unless @is_running
   
       AudioFileReadPackets( 
-        @state.audio_file,
+        @audio_file,
         false,
         bytes_read,
-        @state.packet_descs,
-        @state.current_packet,
-        num_of_packets,
+        @packet_descs,
+        @current_packet,
+        @num_packets_to_read_ptr,
         buffer )
   
       if (packets_read > 0)
         AudioQueueEnqueueBuffer(
-          @state.queue,
+          @queue,
           buffer,
-          @state.packet_descs ? num_of_packets : 0,
-          @state.packet_descs )
-        @state.current_packet += num_of_packets
+          @packet_descs ? num_of_packets : 0,
+          @packet_descs )
+        @current_packet += num_of_packets
       else
-        AudioQueueStop(@state.queue, false)
-        @state.is_running = false
+        stop
       end
     end
     
@@ -64,15 +77,15 @@ class WaveHeart
     
     # Calculate what to read as the audio queue drains.
     #
-    # Returns array of buffer size & number of packets to read.
-    #
-    def derive_buffer_size(
+    def self.derive_buffer_size(
       data_format,                    # AudioStreamBasicDescription
       max_packet_size,                # UInt32                     
       seconds,                        # Float64                    
-      out_buffer_size=nil,            # UInt32                     
-      out_num_packets_to_read=nil )   # UInt32                     
+      out_buffer_size_ptr,            # => UInt32                  
+      out_num_packets_to_read_ptr )   # => UInt32                  
       
+      out_buffer_size = out_buffer_size_ptr[0]
+      out_num_packets_to_read = out_num_packets_to_read_ptr[0]
       
       if data_format.mFramesPerPacket != 0
         num_packets_for_time =
@@ -88,60 +101,78 @@ class WaveHeart
         out_buffer_size > max_packet_size
           out_buffer_size = MaxBufferSize
       elsif out_buffer_size < MinBufferSize
-        out_buffer_size = MinBufferSize;
+        out_buffer_size = MinBufferSize
       end
       
       out_num_packets_to_read = out_buffer_size / max_packet_size;
+      
+      out_buffer_size_ptr.assign out_buffer_size
+      out_num_packets_to_read_ptr.assign out_num_packets_to_read
       
       [out_buffer_size, out_num_packets_to_read]
     end
     
     def load(file_path)
-      audio_file_url = CFURLCreateFromFileSystemRepresentation(
-        nil, file_path, file_path.size, false )
-      result = AudioFileOpenURL(
-        audio_file_url, FsRdPerm, 0, @state.audio_file )
-      CFRelease(audio_file_url)
-      
-      # get @data_format_size
-      AudioFileGetPropertyInfo(
-        @state.audio_file, KAudioFilePropertyDataFormat, @data_format_size, @is_writable )
-      
-      # get @state.data_format
-      AudioFileGetProperty(
-        @state.audio_file, KAudioFilePropertyDataFormat, @data_format_size, @state.data_format )
+      load_audio_file file_path
+      get_audio_file_prop KAudioFilePropertyDataFormat, @data_format_ptr
+      get_audio_file_prop KAudioFilePropertyPacketSizeUpperBound, @max_packet_size_ptr
       
       init_queue
       
-      # get @max_packet_size
-      AudioFileGetProperty(
-        @state.audio_file, KAudioFilePropertyPacketSizeUpperBound, @property_size, @max_packet_size )
+      self.class.derive_buffer_size(
+        @data_format_ptr[0], @max_packet_size_ptr[0], 0.5, @out_buffer_size_ptr, @num_packets_to_read_ptr )
       
-      @state.buffer_byte_size, @state.num_packets_to_read = derive_buffer_size(
-        @state.data_format, @max_packet_size, 0.5 )
+      
+    end
+    
+    def load_audio_file(file_path)
+      audio_file_url = CFURLCreateFromFileSystemRepresentation(
+        nil, file_path, file_path.bytesize, false )
+      result = AudioFileOpenURL(
+        audio_file_url, KAudioFileReadPermission, 0, @audio_file_ptr )
+      CFRelease(audio_file_url)
+      result
+    end
+    
+    def get_audio_file_prop(name, return_ptr)
+      raise RuntimeError, "An audio file must be loaded." unless @audio_file_ptr[0]
+      
+      size_ptr = Pointer.new 'I'
+      return_ptr_klass = return_ptr[0].class
+      size_ptr.assign( return_ptr_klass.respond_to?(:size) ? 
+        return_ptr_klass.size : return_ptr[0].size )
+      is_writable = Pointer.new 'I'
+      
+      AudioFileGetPropertyInfo(
+        @audio_file_ptr[0], name, size_ptr, is_writable )
+      
+      AudioFileGetProperty(
+        @audio_file_ptr[0], name, size_ptr, return_ptr )
     end
     
     def init_queue
-      return if @state.queue
+      return if @queue_ptr[0]
       AudioQueueNewOutput(
-        @state.data_format, :handle_output_buffer, @state, 
+        @data_format_ptr, :handle_output_buffer, @ptr, 
         CFRunLoopGetCurrent(), KCFRunLoopCommonModes, 0,
-        @state.queue )
+        @queue_ptr )
     end
     
     def allocate_packet_desc
       is_format_vbr = (
-        @state.data_format.mBytesPerPacket == 0 ||
-        @state.data_format.mFramesPerPacket == 0 )
+        @data_format_ptr[0].mBytesPerPacket == 0 ||
+        @data_format_ptr[0].mFramesPerPacket == 0 )
       
-      # if is_format_vbr
-      #    @state.packet_descs =
-      #      (AudioStreamPacketDescription*) malloc (
-      #        @state.num_packets_to_read * sizeof (AudioStreamPacketDescription)
-      #        );
-      #  else
-      #    @state.packet_descs = nil;
-      #  end
+      if is_format_vbr
+         # @packet_descs =
+         #   (AudioStreamPacketDescription*) malloc (
+         #     @num_packets_to_read * sizeof (AudioStreamPacketDescription)
+         #     );
+       else
+         @packet_descs = nil
+       end
     end
   end
 end
+
+WaveHeart::Vessel.new('/Users/Shared/Jukebox/Music/Air/Talkie Walkie/10 Alone in Kyoto.m4a')
