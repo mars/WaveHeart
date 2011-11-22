@@ -19,26 +19,28 @@ class WaveHeart
       :audio_file_ptr,            # AudioFileIDPointer           
       :out_buffer_size_ptr,       # UInt32                       
       :max_packet_size_ptr,       # UInt32                       
-      :current_packet,            # SInt64                       
-      :num_packets_to_read,       # UInt32                       
-      :packet_descs,              # AudioStreamPacketDescription 
+      :current_packet_ptr,        # SInt64                       
+      :num_packets_to_read_ptr,   # UInt32                       
+      :packet_descs_ptr,          # AudioStreamPacketDescriptionPointer 
       :is_running )               # bool                         
     
     def initialize(file_path=nil)
-      @ptr = Pointer.new(:object)
-      @ptr.assign(self)
-      @queue_ptr = Pointer.new('^{OpaqueAudioQueue}')
-      @audio_file_ptr = Pointer.new(AudioFileID.type)
-      @data_format_ptr = Pointer.new(AudioStreamBasicDescription.type)
-      @data_format_ptr.assign(AudioStreamBasicDescription.new)
+      @ptr = Pointer.new '@'
+      @ptr.assign self
+      @queue_ptr = Pointer.new '^{OpaqueAudioQueue}'
+      @audio_file_ptr = Pointer.new AudioFileID.type
+      @data_format_ptr = Pointer.new AudioStreamBasicDescription.type
+      @data_format_ptr.assign AudioStreamBasicDescription.new
       @max_packet_size_ptr = Pointer.new 'I'
       @out_buffer_size_ptr = Pointer.new 'I'
+      @current_packet_ptr = Pointer.new 'l'
       @num_packets_to_read_ptr = Pointer.new 'I'
+      @buffers = []
       load(file_path) if file_path
     end
     
     def stop
-      AudioQueueStop(@queue, false)
+      AudioQueueStop(@queue_ptr, false)
       @is_running = false
     end
   
@@ -47,26 +49,28 @@ class WaveHeart
     def handle_output_buffer(
       state,                      # State
       queue,                      # AudioQueueRef
-      buffer )                    # AudioQueueBufferRef
-    
+      buffer_ptr )                # AudioQueueBufferRef
+      
       return unless @is_running
-  
+      
+      bytes_read_ptr = Pointer.new 'I'
+      
       AudioFileReadPackets( 
-        @audio_file,
+        @audio_file_ptr[0],
         false,
-        bytes_read,
-        @packet_descs,
-        @current_packet,
+        bytes_read_ptr,
+        @packet_descs_ptr,
+        @current_packet_ptr[0],
         @num_packets_to_read_ptr,
-        buffer )
-  
-      if (packets_read > 0)
+        buffer_ptr )
+      
+      if (bytes_read_ptr[0] > 0)
         AudioQueueEnqueueBuffer(
-          @queue,
-          buffer,
-          @packet_descs ? num_of_packets : 0,
-          @packet_descs )
-        @current_packet += num_of_packets
+          @queue_ptr,
+          buffer_ptr,
+          @packet_descs_ptr[0] ? @num_packets_to_read_ptr[0] : 0,
+          @packet_descs_ptr )
+        @current_packet_ptr[0] += @num_packets_to_read_ptr[0]
       else
         stop
       end
@@ -122,7 +126,10 @@ class WaveHeart
       self.class.derive_buffer_size(
         @data_format_ptr[0], @max_packet_size_ptr[0], 0.5, @out_buffer_size_ptr, @num_packets_to_read_ptr )
       
-      
+      init_packet_desc
+      init_magic_cookie
+      init_buffers
+      gain = 1.0
     end
     
     def load_audio_file(file_path)
@@ -158,19 +165,76 @@ class WaveHeart
         @queue_ptr )
     end
     
-    def allocate_packet_desc
+    def init_packet_desc
       is_format_vbr = (
         @data_format_ptr[0].mBytesPerPacket == 0 ||
         @data_format_ptr[0].mFramesPerPacket == 0 )
       
-      if is_format_vbr
-         # @packet_descs =
-         #   (AudioStreamPacketDescription*) malloc (
-         #     @num_packets_to_read * sizeof (AudioStreamPacketDescription)
-         #     );
-       else
-         @packet_descs = nil
-       end
+      @packet_descs_ptr = is_format_vbr ?
+        Pointer.new(AudioStreamPacketDescription.type, @num_packets_to_read_ptr[0]) : nil
+    end
+    
+    def init_magic_cookie
+      cookie_size = Pointer.new 'I'
+      is_cookieless = AudioFileGetPropertyInfo(
+        @audio_file_ptr[0],
+        KAudioFilePropertyMagicCookieData,
+        cookie_size,
+        nil )
+      
+      if !is_cookieless && cookie_size[0] > 0
+        magic_cookie = Pointer.new :char, cookie_size[0]
+        
+        AudioFileGetProperty(
+          @audio_file_ptr[0],
+          KAudioFilePropertyMagicCookieData,
+          cookie_size[0],
+          magic_cookie )
+        
+        AudioQueueSetProperty(
+          @audio_file_ptr[0],
+          KAudioQueueProperty_MagicCookie,
+          magic_cookie,
+          cookie_size )
+        
+        free magic_cookie
+      end
+      
+      def init_buffers
+        @current_packet_ptr.assign 0
+        
+        (0..3).each do |i|
+          AudioQueueAllocateBuffer(
+            @queue_ptr,
+            @out_buffer_size_ptr[0],
+            @buffers[i] )
+            
+          handle_output_buffer(
+            @ptr,
+            @queue_ptr,
+            @buffers[i] )
+        end
+      end
+      
+      def gain=(f=1.0)
+        AudioQueueSetParameter(@queue_ptr, KAudioQueueParam_Volume, f)
+      end
+      
+      def play
+        @is_running = true
+        AudioQueueStart(@queue_ptr, nil)
+        while @is_running do
+           CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
+        end
+        CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
+        clean_up
+      end
+      
+      def clean_up
+        AudioQueueDispose(@queue_ptr, true)
+        AudioFileClose(@audio_file_ptr)
+        free @packet_descs_ptr
+      end
     end
   end
 end
