@@ -8,6 +8,9 @@ class WaveHeart
   # An AudioQueue pushing an audio stream into CoreAudio HAL.
   #
   class Vessel
+    
+    BufferCount = 3
+    
     attr_reader( 
       :ptr,                       # Pointer to self              
       :data_format,               # AudioStreamBasicDescription  
@@ -28,6 +31,7 @@ class WaveHeart
       @ptr = Pointer.new '@'
       @ptr.assign self
       @queue_ptr = Pointer.new '^{OpaqueAudioQueue}'
+      @buffers = (0...BufferCount).collect {|i| Pointer.new '^{AudioQueueBuffer}' }
       @audio_file_ptr = Pointer.new AudioFileID.type
       @data_format_ptr = Pointer.new AudioStreamBasicDescription.type
       @data_format_ptr.assign AudioStreamBasicDescription.new
@@ -35,7 +39,6 @@ class WaveHeart
       @out_buffer_size_ptr = Pointer.new 'I'
       @current_packet_ptr = Pointer.new 'l'
       @num_packets_to_read_ptr = Pointer.new 'I'
-      @buffers = []
       load(file_path) if file_path
     end
     
@@ -55,7 +58,7 @@ class WaveHeart
       
       bytes_read_ptr = Pointer.new 'I'
       
-      AudioFileReadPackets( 
+      result = AudioFileReadPackets( 
         @audio_file_ptr[0],
         false,
         bytes_read_ptr,
@@ -63,13 +66,15 @@ class WaveHeart
         @current_packet_ptr[0],
         @num_packets_to_read_ptr,
         buffer_ptr )
+      raise(RuntimeError, "AudioFileReadPackets returned #{result}") unless result==0
       
       if (bytes_read_ptr[0] > 0)
-        AudioQueueEnqueueBuffer(
+        result = AudioQueueEnqueueBuffer(
           @queue_ptr,
           buffer_ptr,
           @packet_descs_ptr[0] ? @num_packets_to_read_ptr[0] : 0,
           @packet_descs_ptr )
+        raise(RuntimeError, "AudioQueueEnqueueBuffer returned #{result}") unless result==0
         @current_packet_ptr[0] += @num_packets_to_read_ptr[0]
       else
         stop
@@ -121,15 +126,16 @@ class WaveHeart
       get_audio_file_prop KAudioFilePropertyDataFormat, @data_format_ptr
       get_audio_file_prop KAudioFilePropertyPacketSizeUpperBound, @max_packet_size_ptr
       
-      init_queue
-      
       self.class.derive_buffer_size(
         @data_format_ptr[0], @max_packet_size_ptr[0], 0.5, @out_buffer_size_ptr, @num_packets_to_read_ptr )
       
       init_packet_desc
       init_magic_cookie
+      
+      init_queue
       init_buffers
       gain = 1.0
+      play
     end
     
     def load_audio_file(file_path)
@@ -159,10 +165,12 @@ class WaveHeart
     
     def init_queue
       return if @queue_ptr[0]
-      AudioQueueNewOutput(
+      result = AudioQueueNewOutput(
         @data_format_ptr, :handle_output_buffer, @ptr, 
         CFRunLoopGetCurrent(), KCFRunLoopCommonModes, 0,
         @queue_ptr )
+      raise(RuntimeError, "AudioQueueNewOutput returned #{result}") unless result==0
+      result
     end
     
     def init_packet_desc
@@ -203,16 +211,12 @@ class WaveHeart
       def init_buffers
         @current_packet_ptr.assign 0
         
-        (0..3).each do |i|
-          AudioQueueAllocateBuffer(
-            @queue_ptr,
-            @out_buffer_size_ptr[0],
-            @buffers[i] )
-            
+        @buffers.each do |buffer_ptr|
+          result = AudioQueueAllocateBuffer(
+            @queue_ptr, @out_buffer_size_ptr[0], buffer_ptr )
+          raise(RuntimeError, "AudioQueueAllocateBuffer returned #{result}") unless result==0
           handle_output_buffer(
-            @ptr,
-            @queue_ptr,
-            @buffers[i] )
+            @ptr, @queue_ptr, buffer_ptr )
         end
       end
       
@@ -222,7 +226,8 @@ class WaveHeart
       
       def play
         @is_running = true
-        AudioQueueStart(@queue_ptr, nil)
+        result = AudioQueueStart(@queue_ptr, nil)
+        raise(RuntimeError, "AudioQueueStart returned #{result}") unless result==0
         while @is_running do
            CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
         end
