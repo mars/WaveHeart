@@ -1,6 +1,7 @@
 # MacRuby 0.10
 
-framework 'Cocoa'
+framework 'AppKit'
+framework 'CoreAudio'
 framework 'AudioToolbox'
 
 class WaveHeart
@@ -18,6 +19,7 @@ class WaveHeart
       :queue,                     # AudioQueueRef                
       :queue_ptr,                 # AudioQueueRefPointer         
       :buffers,                   # AudioQueueBufferRef          
+      :audio_file_url,            # AudioFileURL                 
       :audio_file,                # AudioFileID                  
       :audio_file_ptr,            # AudioFileIDPointer           
       :out_buffer_size_ptr,       # UInt32                       
@@ -28,9 +30,12 @@ class WaveHeart
       :is_running )               # bool                         
     
     def initialize(file_path=nil)
+      puts "#{self.class}.new"
+      @audio_file_url = file_path
+      
       @ptr = Pointer.new '@'
       @ptr.assign self
-      @queue_ptr = Pointer.new '^{OpaqueAudioQueue}'
+      @queue_ptr = Pointer.new '@'
       @buffers = (0...BufferCount).collect {|i| Pointer.new '^{AudioQueueBuffer}' }
       @audio_file_ptr = Pointer.new AudioFileID.type
       @data_format_ptr = Pointer.new AudioStreamBasicDescription.type
@@ -39,46 +44,14 @@ class WaveHeart
       @out_buffer_size_ptr = Pointer.new 'I'
       @current_packet_ptr = Pointer.new 'l'
       @num_packets_to_read_ptr = Pointer.new 'I'
-      load(file_path) if file_path
+      
+      load
     end
     
     def stop
+      puts "stop"
       AudioQueueStop(@queue_ptr, false)
       @is_running = false
-    end
-  
-    # Callback from the AudioQueue to refill a playback buffer.
-    #
-    def handle_output_buffer(
-      state,                      # State
-      queue,                      # AudioQueueRef
-      buffer_ptr )                # AudioQueueBufferRef
-      
-      return unless @is_running
-      
-      bytes_read_ptr = Pointer.new 'I'
-      
-      result = AudioFileReadPackets( 
-        @audio_file_ptr[0],
-        false,
-        bytes_read_ptr,
-        @packet_descs_ptr,
-        @current_packet_ptr[0],
-        @num_packets_to_read_ptr,
-        buffer_ptr )
-      raise(RuntimeError, "AudioFileReadPackets returned #{result}") unless result==0
-      
-      if (bytes_read_ptr[0] > 0)
-        result = AudioQueueEnqueueBuffer(
-          @queue_ptr,
-          buffer_ptr,
-          @packet_descs_ptr[0] ? @num_packets_to_read_ptr[0] : 0,
-          @packet_descs_ptr )
-        raise(RuntimeError, "AudioQueueEnqueueBuffer returned #{result}") unless result==0
-        @current_packet_ptr[0] += @num_packets_to_read_ptr[0]
-      else
-        stop
-      end
     end
     
     MaxBufferSize = 0x50000
@@ -91,7 +64,8 @@ class WaveHeart
       max_packet_size,                # UInt32                     
       seconds,                        # Float64                    
       out_buffer_size_ptr,            # => UInt32                  
-      out_num_packets_to_read_ptr )   # => UInt32                  
+      out_num_packets_to_read_ptr )   # => UInt32      
+      puts "derive_buffer_size"            
       
       out_buffer_size = out_buffer_size_ptr[0]
       out_num_packets_to_read = out_num_packets_to_read_ptr[0]
@@ -121,8 +95,10 @@ class WaveHeart
       [out_buffer_size, out_num_packets_to_read]
     end
     
-    def load(file_path)
-      load_audio_file file_path
+    def load(file_path=nil)
+      puts "load"
+      @audio_file_url = file path if file_path
+      load_audio_file @audio_file_url
       get_audio_file_prop KAudioFilePropertyDataFormat, @data_format_ptr
       get_audio_file_prop KAudioFilePropertyPacketSizeUpperBound, @max_packet_size_ptr
       
@@ -130,15 +106,18 @@ class WaveHeart
         @data_format_ptr[0], @max_packet_size_ptr[0], 0.5, @out_buffer_size_ptr, @num_packets_to_read_ptr )
       
       init_packet_desc
-      init_magic_cookie
       
       init_queue
+      init_magic_cookie
       init_buffers
       gain = 1.0
       play
     end
     
+    # sets @audio_file_ptr
+    #
     def load_audio_file(file_path)
+      puts "load_audio_file"
       audio_file_url = CFURLCreateFromFileSystemRepresentation(
         nil, file_path, file_path.bytesize, false )
       result = AudioFileOpenURL(
@@ -148,6 +127,7 @@ class WaveHeart
     end
     
     def get_audio_file_prop(name, return_ptr)
+      puts "get_audio_file_prop"
       raise RuntimeError, "An audio file must be loaded." unless @audio_file_ptr[0]
       
       size_ptr = Pointer.new 'I'
@@ -158,22 +138,14 @@ class WaveHeart
       
       AudioFileGetPropertyInfo(
         @audio_file_ptr[0], name, size_ptr, is_writable )
-      
-      AudioFileGetProperty(
+      result = AudioFileGetProperty(
         @audio_file_ptr[0], name, size_ptr, return_ptr )
-    end
-    
-    def init_queue
-      return if @queue_ptr[0]
-      result = AudioQueueNewOutput(
-        @data_format_ptr, :handle_output_buffer, @ptr, 
-        CFRunLoopGetCurrent(), KCFRunLoopCommonModes, 0,
-        @queue_ptr )
-      raise(RuntimeError, "AudioQueueNewOutput returned #{result}") unless result==0
+      raise(RuntimeError, "AudioFileGetProperty returned #{result}") unless result==0
       result
     end
     
     def init_packet_desc
+      puts "init_packet_desc"
       is_format_vbr = (
         @data_format_ptr[0].mBytesPerPacket == 0 ||
         @data_format_ptr[0].mFramesPerPacket == 0 )
@@ -183,65 +155,129 @@ class WaveHeart
     end
     
     def init_magic_cookie
+      puts "init_magic_cookie"
       cookie_size = Pointer.new 'I'
-      is_cookieless = AudioFileGetPropertyInfo(
+      result = AudioFileGetPropertyInfo(
         @audio_file_ptr[0],
         KAudioFilePropertyMagicCookieData,
         cookie_size,
         nil )
       
-      if !is_cookieless && cookie_size[0] > 0
-        magic_cookie = Pointer.new :char, cookie_size[0]
+      if result == 0 && cookie_size[0] > 0
+        magic_cookie = Pointer.new :char
         
         AudioFileGetProperty(
           @audio_file_ptr[0],
           KAudioFilePropertyMagicCookieData,
-          cookie_size[0],
+          cookie_size,
           magic_cookie )
         
-        AudioQueueSetProperty(
-          @audio_file_ptr[0],
+        result = AudioQueueSetProperty(
+          @queue_ptr,
           KAudioQueueProperty_MagicCookie,
           magic_cookie,
-          cookie_size )
-        
-        free magic_cookie
+          cookie_size[0] )
+        raise(RuntimeError, "AudioQueueSetProperty returned #{result}") unless result==0
       end
+    end
+    
+    def init_queue
+      puts "init_queue"
+      return if @queue_ptr[0]
+      callback = Proc.new do |state, queue, buffer_ptr|
+        self.class.handle_output_buffer(state, queue, buffer_ptr)
+      end
+      result = AudioQueueNewOutput(
+        @data_format_ptr, callback, @ptr, 
+        CFRunLoopGetCurrent(), KCFRunLoopCommonModes, 0,
+        @queue_ptr )
+      raise(RuntimeError, "AudioQueueNewOutput returned #{result}") unless result==0
+      result
+    end
+    
+    def init_buffers
+      puts "init_buffers"
+      @current_packet_ptr.assign 0
       
-      def init_buffers
-        @current_packet_ptr.assign 0
-        
-        @buffers.each do |buffer_ptr|
-          result = AudioQueueAllocateBuffer(
-            @queue_ptr, @out_buffer_size_ptr[0], buffer_ptr )
-          raise(RuntimeError, "AudioQueueAllocateBuffer returned #{result}") unless result==0
-          handle_output_buffer(
-            @ptr, @queue_ptr, buffer_ptr )
-        end
+      @buffers.each do |buffer_ptr|
+        result = AudioQueueAllocateBuffer(
+          @queue_ptr, @out_buffer_size_ptr[0], buffer_ptr )
+        raise(RuntimeError, "AudioQueueAllocateBuffer returned #{result}") unless result==0
+        handle_output_buffer(
+          @ptr, @queue_ptr, buffer_ptr )
       end
+    end
+    
+    def gain=(f=1.0)
+      puts "gain="
+      AudioQueueSetParameter(@queue_ptr, KAudioQueueParam_Volume, f)
+    end
+    
+    def play
+      puts "play"
+      @is_running = true
+      result = AudioQueueStart(@queue_ptr, nil)
+      raise(RuntimeError, "AudioQueueStart returned #{result}") unless result==0
+      while @is_running do
+         CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
+      end
+      CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
+      clean_up
+    end
+    
+    def clean_up
+      puts "clean_up"
+      AudioQueueDispose(@queue_ptr, true)
+      AudioFileClose(@audio_file_ptr)
+    end
+    
+    # Callback from the AudioQueue to refill a playback buffer.
+    #
+    def self.handle_output_buffer(
+      state,                      # State
+      queue,                      # AudioQueueRef
+      buffer_ptr )                # AudioQueueBufferRef
+      puts "handle_output_buffer"
       
-      def gain=(f=1.0)
-        AudioQueueSetParameter(@queue_ptr, KAudioQueueParam_Volume, f)
-      end
+      state.cast!('@')[0]
       
-      def play
-        @is_running = true
-        result = AudioQueueStart(@queue_ptr, nil)
-        raise(RuntimeError, "AudioQueueStart returned #{result}") unless result==0
-        while @is_running do
-           CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
-        end
-        CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
-        clean_up
-      end
+      return unless state.is_running
       
-      def clean_up
-        AudioQueueDispose(@queue_ptr, true)
-        AudioFileClose(@audio_file_ptr)
-        free @packet_descs_ptr
+      bytes_read_ptr = Pointer.new 'I'
+      
+      result = AudioFileReadPackets( 
+        state.audio_file_ptr[0],
+        false,
+        bytes_read_ptr,
+        state.packet_descs_ptr,
+        state.current_packet_ptr[0],
+        state.num_packets_to_read_ptr,
+        buffer_ptr )
+      raise(RuntimeError, "AudioFileReadPackets returned #{result}") unless result==0
+      
+      if (bytes_read_ptr[0] > 0)
+        result = AudioQueueEnqueueBuffer(
+          queue,
+          buffer_ptr,
+          state.packet_descs_ptr[0] ? state.num_packets_to_read_ptr[0] : 0,
+          state.packet_descs_ptr )
+        raise(RuntimeError, "AudioQueueEnqueueBuffer returned #{result}") unless result==0
+        state.current_packet_ptr.assign = 
+          state.current_packet_ptr[0] + state.num_packets_to_read_ptr[0]
+      else
+        stop
       end
+    end
+  end
+  
+  class AppDelegate
+    def applicationDidFinishLaunching(notification)
+      v = Vessel.new('/Users/Shared/Jukebox/Music/Air/Talkie Walkie/10 Alone in Kyoto.m4a')
     end
   end
 end
 
-WaveHeart::Vessel.new('/Users/Shared/Jukebox/Music/Air/Talkie Walkie/10 Alone in Kyoto.m4a')
+app = NSApplication.sharedApplication
+app.delegate = WaveHeart::AppDelegate.new
+app.run
+
