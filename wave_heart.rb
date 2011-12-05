@@ -1,5 +1,8 @@
 # MacRuby 0.10
 
+require "rubygems"
+require "inline"
+
 framework 'AppKit'
 framework 'CoreAudio'
 framework 'AudioToolbox'
@@ -12,8 +15,70 @@ class WaveHeart
     
     BufferCount = 3
     
+    class AudioQueueState
+    end
+    
+    inline do |builder|
+      builder.include '<AudioToolbox/AudioToolbox.h>'
+      builder.include '<MacRuby/MacRuby.h>'
+      builder.add_compile_flags '-x c++', '-lstdc++'
+      builder.prefix %{
+        static const int kNumberBuffers = 3;
+        struct AudioQueueState {
+          AudioStreamBasicDescription   mDataFormat;
+          AudioQueueRef                 mQueue;
+          AudioQueueBufferRef           mBuffers[kNumberBuffers];
+          AudioFileID                   mAudioFile;
+          UInt32                        bufferByteSize;
+          SInt64                        mCurrentPacket;
+          UInt32                        mNumPacketsToRead;
+          AudioStreamPacketDescription  *mPacketDescs;
+          bool                          mIsRunning;
+        };
+        static void HandleOutputBuffer (
+          void                          *aqData,
+          AudioQueueRef                 inAQ, 
+          AudioQueueBufferRef           inBuffer) {
+          
+          VALUE c = rb_cObject;
+          c = rb_const_get(c, rb_intern("WaveHeart"));
+          c = rb_const_get(c, rb_intern("Vessel"));
+          
+          rb_funcall(c, rb_intern("handle_output_buffer"), 3, aqData, inAQ, inBuffer);
+        }
+      }
+      builder.struct_name = 'AudioQueueState'
+      builder.accessor :is_running, 'VALUE', :mIsRunning
+      builder.c %{
+        VALUE init_state_in_c(VALUE klass) {
+          AudioQueueState* aqData = NULL;
+          VALUE v = Data_Wrap_Struct(klass, NULL, NULL, aqData);
+          return v;
+        };
+      }
+       
+      builder.c %{ 
+        int init_queue_in_c(VALUE state) {
+          AudioQueueState* aqData;
+          Data_Get_Struct(state, AudioQueueState, aqData);
+          int mResultCode;
+          mResultCode = AudioQueueNewOutput(
+            &aqData->mDataFormat, 
+            HandleOutputBuffer, 
+            &aqData, 
+            CFRunLoopGetCurrent(), 
+            NULL, 
+            0, 
+            &aqData->mQueue);
+          return mResultCode;
+        };
+      }
+    end
+    
     attr_reader( 
+      :state,                     # Pointer to Ruby C AudioQueueState struct
       :ptr,                       # Pointer to self              
+      :queue_ref_ptr,             # Pointer to Ruby C AudioQueueRef struct
       :data_format,               # AudioStreamBasicDescription  
       :data_format_ptr,           # AudioStreamBasicDescriptionPointer  
       :queue,                     # AudioQueueRef                
@@ -33,10 +98,12 @@ class WaveHeart
       puts "#{self.class}.new"
       @audio_file_url = file_path
       
-      @ptr = Pointer.new '@'
-      @ptr.assign self
-      @queue_ptr = Pointer.new '@'
-      @buffers = (0...BufferCount).collect {|i| Pointer.new '^{AudioQueueBuffer}' }
+      p = Pointer.new '@'
+      p.assign AudioQueueState
+      @state = init_state_in_c(AudioQueueState)
+      # @ptr = Pointer.new '@'
+      # @ptr.assign self
+      # @buffers = (0...BufferCount).collect {|i| Pointer.new '^{AudioQueueBuffer}' }
       @audio_file_ptr = Pointer.new AudioFileID.type
       @data_format_ptr = Pointer.new AudioStreamBasicDescription.type
       @data_format_ptr.assign AudioStreamBasicDescription.new
@@ -50,7 +117,7 @@ class WaveHeart
     
     def stop
       puts "stop"
-      AudioQueueStop(@queue_ptr, false)
+      cAudioQueueStop(@queue_ref_ptr, false)
       @is_running = false
     end
     
@@ -173,7 +240,7 @@ class WaveHeart
           magic_cookie )
         
         result = AudioQueueSetProperty(
-          @queue_ptr,
+          @queue_ref_ptr,
           KAudioQueueProperty_MagicCookie,
           magic_cookie,
           cookie_size[0] )
@@ -181,16 +248,14 @@ class WaveHeart
       end
     end
     
+    def handle_output_buffer(state, queue, buffer_ptr)
+      self.class.handle_output_buffer(state, queue, buffer_ptr)
+    end
+    
     def init_queue
       puts "init_queue"
-      return if @queue_ptr[0]
-      callback = Proc.new do |state, queue, buffer_ptr|
-        self.class.handle_output_buffer(state, queue, buffer_ptr)
-      end
-      result = AudioQueueNewOutput(
-        @data_format_ptr, callback, @ptr, 
-        CFRunLoopGetCurrent(), KCFRunLoopCommonModes, 0,
-        @queue_ptr )
+      #return if @queue_ref_ptr[0]
+      result = init_queue_in_c(@state)
       raise(RuntimeError, "AudioQueueNewOutput returned #{result}") unless result==0
       result
     end
@@ -201,22 +266,22 @@ class WaveHeart
       
       @buffers.each do |buffer_ptr|
         result = AudioQueueAllocateBuffer(
-          @queue_ptr, @out_buffer_size_ptr[0], buffer_ptr )
+          @queue_ref_ptr, @out_buffer_size_ptr[0], buffer_ptr )
         raise(RuntimeError, "AudioQueueAllocateBuffer returned #{result}") unless result==0
         handle_output_buffer(
-          @ptr, @queue_ptr, buffer_ptr )
+          @ptr, @queue_ref_ptr, buffer_ptr )
       end
     end
     
     def gain=(f=1.0)
       puts "gain="
-      AudioQueueSetParameter(@queue_ptr, KAudioQueueParam_Volume, f)
+      AudioQueueSetParameter(@queue_ref_ptr, KAudioQueueParam_Volume, f)
     end
     
     def play
       puts "play"
       @is_running = true
-      result = AudioQueueStart(@queue_ptr, nil)
+      result = AudioQueueStart(@queue_ref_ptr, nil)
       raise(RuntimeError, "AudioQueueStart returned #{result}") unless result==0
       while @is_running do
          CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
@@ -227,7 +292,7 @@ class WaveHeart
     
     def clean_up
       puts "clean_up"
-      AudioQueueDispose(@queue_ptr, true)
+      AudioQueueDispose(@queue_ref_ptr, true)
       AudioFileClose(@audio_file_ptr)
     end
     
