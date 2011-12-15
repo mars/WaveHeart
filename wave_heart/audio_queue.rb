@@ -29,9 +29,6 @@ class WaveHeart
       puts "#{self.class}#get_data_format_in_c"
       result = get_data_format_in_c @state
       raise(RuntimeError, "AudioFileGetProperty returned #{result}") unless result==0
-      puts "#{self.class}#get_data_format_in_c"
-      result = get_data_format_in_c @state
-      raise(RuntimeError, "AudioFileGetProperty returned #{result}") unless result==0
       puts "#{self.class}#new_output_in_c"
       result = new_output_in_c @state
       raise(RuntimeError, "AudioQueueNewOutput returned #{result}") unless result==0
@@ -44,12 +41,12 @@ class WaveHeart
     
     def play
       puts "#{self.class}#play"
-      @state.is_running = true
+      is_running = true
       prime unless @is_primed
       gain = 1.0
       result = start_in_c @state
       raise(RuntimeError, "AudioQueueStart returned #{result}") unless result==0
-      while @state.is_running do
+      while is_running do
          CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
       end
       CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
@@ -60,7 +57,7 @@ class WaveHeart
       puts "#{self.class}#stop"
       result = stop_in_c @state
       raise(RuntimeError, "AudioQueueStop returned #{result}") unless result==0
-      @state.is_running = false
+      is_running = false
       result
     end
     
@@ -81,7 +78,7 @@ class WaveHeart
     
     def cleanup
       puts "#{self.class}#cleanup"
-      return if @state.is_running
+      return if is_running
       result = cleanup_in_c @state
       raise(RuntimeError, "AudioQueueDispose returned #{result}") unless result==0
       result
@@ -179,7 +176,7 @@ class WaveHeart
       
       builder.c %{
         VALUE init_state_in_c(VALUE klass) {
-          AudioQueueState* aqState;
+          AudioQueueState* aqState = ALLOC (AudioQueueState);
           VALUE v = Data_Wrap_Struct(klass, NULL, NULL, aqState);
           return v;
         };

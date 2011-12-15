@@ -11,3 +11,18 @@ Then in MacRuby:
 
 
     gen_bridge_metadata -o malloc.bridgesupport -c "-I/usr/include/malloc/malloc.h" malloc.h
+    
+    
+    
+    
+Audio queue property debugging:
+
+    UInt32 p;
+    UInt32 ps = sizeof (UInt32);
+    AudioQueueGetProperty (
+      aqState->mQueue,
+      kAudioQueueDeviceProperty_NumberChannels,
+      &p,
+      &ps );
+    
+    rb_raise(rb_eRuntimeError, "kAudioQueueDeviceProperty_NumberChannels %d", p);
