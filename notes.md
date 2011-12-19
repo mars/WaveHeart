@@ -26,3 +26,29 @@ Audio queue property debugging:
       &ps );
     
     rb_raise(rb_eRuntimeError, "kAudioQueueDeviceProperty_NumberChannels %d", p);
+    
+    
+          
+              rb_raise(rb_eRuntimeError, 
+                "aqState->maxPacketSize %d mSampleRate %d mBytesPerPacket %d mFramesPerPacket %d", 
+                aqState->maxPacketSize,
+                aqState->mSampleRate, 
+                aqState->mBytesPerPacket, 
+                aqState->mFramesPerPacket);
+                
+                
+                
+                
+                
+            if (aqState->isFormatVBR) {
+              mResultCode = AudioQueueAllocateBufferWithPacketDescriptions(
+                aqState->mQueue,
+                aqState->bufferByteSize,
+                aqState->mNumPacketsToRead,
+                &aqState->mBuffers[i]);
+            } else {
+              mResultCode = AudioQueueAllocateBuffer(
+                aqState->mQueue,
+                aqState->bufferByteSize,
+                &aqState->mBuffers[i]);
+            }

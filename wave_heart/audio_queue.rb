@@ -1,22 +1,21 @@
-require "rubygems"
-require "inline"
-
 class WaveHeart
   
   # An object-oriented interface for Apple's AudioToolbox audio queue
   #
   class AudioQueue
     
-    class State; end
+    BufferSeconds = 5
+    MaxBufferSize = 327680 # 320KB
+    MinBufferSize = 16384 # 16KB
     
-    attr_reader :state, :data_format, :is_primed
+    attr_reader :state, :data_format, :buffer_seconds, :is_primed
     
     def initialize
       puts "#{self.class}#initialize"
       @is_primed = false
       @data_format = Pointer.new AudioStreamBasicDescription.type
       @data_format.assign AudioStreamBasicDescription.new
-      @state = init_state_in_c State
+      @state = State.new
       self
     end
     
@@ -24,29 +23,31 @@ class WaveHeart
       puts "#{self.class}#open"
       @is_primed = false
       puts "#{self.class}#open_audio_file_in_c"
-      result = open_audio_file_in_c @state, audio_file_url
-      raise(RuntimeError, "AudioFileOpenURL returned #{result}") unless result==0
+      open_audio_file_in_c @state, audio_file_url
+      
       puts "#{self.class}#get_data_format_in_c"
-      result = get_data_format_in_c @state
-      raise(RuntimeError, "AudioFileGetProperty returned #{result}") unless result==0
-      puts "#{self.class}#new_output_in_c"
-      result = new_output_in_c @state
-      raise(RuntimeError, "AudioQueueNewOutput returned #{result}") unless result==0
-      puts "#{self.class}#setup_buffers_in_c"
-      result = setup_buffers_in_c @state
-      raise(RuntimeError, "AudioFileGetProperty returned #{result}") unless result==0
-      puts "#{self.class}#set_magic_cookie_in_c"
-      set_magic_cookie_in_c @state
+      get_data_format_in_c @state
     end
     
     def play
       puts "#{self.class}#play"
-      is_running = true
+      
+      puts "#{self.class}#new_output_in_c"
+      new_output_in_c @state
+      
+      puts "#{self.class}#set_magic_cookie_in_c"
+      set_magic_cookie_in_c @state
+      
+      puts "self.class.derive_buffer_size(#{@state.format_sample_rate}, #{@state.format_frames_per_packet}, #{@state.format_max_packet_size}, #{buffer_seconds})"
+      @state.buffer_byte_size, @state.num_packets_to_read = self.class.derive_buffer_size(
+        @state.format_sample_rate, @state.format_frames_per_packet, @state.format_max_packet_size, buffer_seconds)
+      puts " => buffer_byte_size #{@state.buffer_byte_size} num_packets_to_read #{@state.num_packets_to_read}"
+      
+      @state.is_running = true
       prime unless @is_primed
       gain = 1.0
-      result = start_in_c @state
-      raise(RuntimeError, "AudioQueueStart returned #{result}") unless result==0
-      while is_running do
+      start_in_c @state
+      while @state.is_running do
          CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
       end
       CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
@@ -55,17 +56,19 @@ class WaveHeart
     
     def stop
       puts "#{self.class}#stop"
-      result = stop_in_c @state
-      raise(RuntimeError, "AudioQueueStop returned #{result}") unless result==0
-      is_running = false
+      stop_in_c @state
+      @state.is_running = false
       result
     end
     
     def gain=(f)
       puts "#{self.class}#gain=(#{f.inspect})"
-      result = set_audio_queue_param_in_c @state, KAudioQueueParam_Volume, f
-      raise(RuntimeError, "AudioQueueSetParameter returned #{result}") unless result==0
+      set_audio_queue_param_in_c @state, KAudioQueueParam_Volume, f
       result
+    end
+    
+    def buffer_seconds
+      @buffer_seconds ||= BufferSeconds
     end
     
     def prime
@@ -78,154 +81,101 @@ class WaveHeart
     
     def cleanup
       puts "#{self.class}#cleanup"
-      return if is_running
+      return if @state.is_running
       result = cleanup_in_c @state
       raise(RuntimeError, "AudioQueueDispose returned #{result}") unless result==0
       result
     end
     
-    inline do |builder|
+    inline(:C) do |builder|
+      builder.add_compile_flags '-x c++', '-lstdc++', '-I ./src'
       builder.include '<CoreFoundation/CoreFoundation.h>'
       builder.include '<CoreServices/CoreServices.h>'
       builder.include '<AudioToolbox/AudioToolbox.h>'
-      builder.include '<MacRuby/MacRuby.h>'
-      builder.add_compile_flags '-x c++', '-lstdc++'
+      builder.include '<AudioQueueState.h>'
       builder.prefix %{
-        static const int kNumberBuffers = 3;
         
-        struct AudioQueueState {
-          AudioStreamBasicDescription   mDataFormat;
-          AudioQueueRef                 mQueue;
-          AudioQueueBufferRef           mBuffers[kNumberBuffers];
-          AudioFileID                   mAudioFile;
-          UInt32                        bufferByteSize;
-          SInt64                        mCurrentPacket;
-          UInt32                        mNumPacketsToRead;
-          AudioStreamPacketDescription  *mPacketDescs;
-          bool                          mIsRunning;
-        };
+        static void CheckError(OSStatus error, const char *operation) {
+          if (error == noErr) return;
+          char errorString[20];
+          // See if it appears to be a 4-char-code
+          *(UInt32 *)(errorString + 1) = CFSwapInt32HostToBig(error);
+          if (isprint(errorString[1]) && isprint(errorString[2]) &&
+              isprint(errorString[3]) && isprint(errorString[4])) {
+              errorString[0] = errorString[5] = '\\'';
+              errorString[6] = '\\0';
+          } else
+              // No, format it as an integer
+              sprintf(errorString, "%d", (int)error);
+          fprintf(stderr, "Error: %s (%s)\\n", operation, errorString);
+          exit(1);
+        }
         
         static void HandleOutputBuffer(
           void                          *aqState,
           AudioQueueRef                 inAQ, 
           AudioQueueBufferRef           inBuffer) {
-            
+          
           AudioQueueState *pAqData = (AudioQueueState *) aqState;
-          if (pAqData->mIsRunning == 0) return;
-          UInt32 numBytesReadFromFile;
+          if (!pAqData->mIsRunning) return;
+          UInt32 numBytes;
           UInt32 numPackets = pAqData->mNumPacketsToRead;
-          AudioFileReadPackets(
+          CheckError(AudioFileReadPackets(
             pAqData->mAudioFile,
             false,
-            &numBytesReadFromFile,
+            &numBytes,
             pAqData->mPacketDescs, 
             pAqData->mCurrentPacket,
             &numPackets,
             inBuffer->mAudioData 
-          );
+          ), "AudioFileReadPackets failed");
+          
           if (numPackets > 0) {
-            inBuffer->mAudioDataByteSize = numBytesReadFromFile;
-            AudioQueueEnqueueBuffer( 
+            inBuffer->mAudioDataByteSize = numBytes;
+            CheckError(AudioQueueEnqueueBuffer( 
               pAqData->mQueue,
               inBuffer,
               (pAqData->mPacketDescs ? numPackets : 0),
               pAqData->mPacketDescs
-            );
+            ), "AudioQueueEnqueueBuffer failed");
             pAqData->mCurrentPacket += numPackets;
           } else {
             AudioQueueStop(pAqData->mQueue, false);
             pAqData->mIsRunning = false; 
           }
         }
-        
-        void DeriveBufferSize(
-          AudioStreamBasicDescription &ASBDesc,
-          UInt32                      maxPacketSize,
-          Float64                     seconds,
-          UInt32                      *outBufferSize,
-          UInt32                      *outNumPacketsToRead) {
-          
-          static const int maxBufferSize = 0x50000;
-          static const int minBufferSize = 0x4000;
-          
-          if (ASBDesc.mFramesPerPacket != 0) {
-            Float64 numPacketsForTime =
-              ASBDesc.mSampleRate / ASBDesc.mFramesPerPacket * seconds;
-            *outBufferSize = numPacketsForTime * maxPacketSize;
-          } else {
-            *outBufferSize =
-              maxBufferSize > maxPacketSize ?
-                maxBufferSize : maxPacketSize;
-          }
-          
-          if (
-            *outBufferSize > maxBufferSize &&
-            *outBufferSize > maxPacketSize
-          )
-            *outBufferSize = maxBufferSize;
-          else {
-            if (*outBufferSize < minBufferSize)
-              *outBufferSize = minBufferSize;
-          }
-          
-          *outNumPacketsToRead = *outBufferSize / maxPacketSize;
-        }
       }
-      builder.struct_name = 'AudioQueueState'
-      builder.accessor :is_running, 'VALUE', :mIsRunning
-      
-      builder.c %{
-        VALUE init_state_in_c(VALUE klass) {
-          AudioQueueState* aqState = ALLOC (AudioQueueState);
-          VALUE v = Data_Wrap_Struct(klass, NULL, NULL, aqState);
-          return v;
+       
+      builder.c %{ 
+        void set_audio_queue_param_in_c(VALUE state, VALUE param, VALUE value) {
+          AudioQueueState* aqState;
+          Data_Get_Struct(state, AudioQueueState, aqState);
+          CheckError(AudioQueueSetParameter(
+            aqState->mQueue, param, value
+          ), "AudioQueueSetParameter failed");
+          return NULL;
         };
       }
        
       builder.c %{ 
-        int new_output_in_c(VALUE state) {
+        void start_in_c(VALUE state) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
-          int mResultCode;
-          mResultCode = AudioQueueNewOutput(
-            &aqState->mDataFormat, 
-            HandleOutputBuffer, 
-            &aqState, 
-            CFRunLoopGetCurrent(), 
-            NULL, 
-            0, 
-            &aqState->mQueue);
-          return mResultCode;
+          CheckError(AudioQueueStart(
+            aqState->mQueue, NULL
+          ), "AudioQueueStart failed");
+          return NULL;
         };
       }
        
       builder.c %{ 
-        int set_audio_queue_param_in_c(VALUE state, VALUE param, VALUE value) {
+        void stop_in_c(VALUE state) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
-          int mResultCode;
-          mResultCode = AudioQueueSetParameter(aqState->mQueue, param, value);
-          return mResultCode;
-        };
-      }
-       
-      builder.c %{ 
-        int start_in_c(VALUE state) {
-          AudioQueueState* aqState;
-          Data_Get_Struct(state, AudioQueueState, aqState);
-          int mResultCode;
-          mResultCode = AudioQueueStart(aqState->mQueue, NULL);
-          return mResultCode;
-        };
-      }
-       
-      builder.c %{ 
-        int stop_in_c(VALUE state) {
-          AudioQueueState* aqState;
-          Data_Get_Struct(state, AudioQueueState, aqState);
-          int mResultCode;
-          mResultCode = AudioQueueStop(aqState->mQueue, false);
-          return mResultCode;
+          CheckError(AudioQueueStop(
+            aqState->mQueue, false
+          ), "AudioQueueStop failed");
+          return NULL;
         };
       }
        
@@ -241,7 +191,7 @@ class WaveHeart
       }
        
       builder.c %{ 
-        int open_audio_file_in_c(VALUE state, VALUE filePath) {
+        void open_audio_file_in_c(VALUE state, VALUE filePath) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
           
@@ -249,79 +199,94 @@ class WaveHeart
           const char *fp = RSTRING_PTR(str);
           int str_len RSTRING_LEN(str);
           
-          int mResultCode;
           CFURLRef audioFileURL = CFURLCreateFromFileSystemRepresentation(
             NULL,
             (Byte *) fp,
             str_len,
             false);
-          mResultCode = AudioFileOpenURL(
+          
+          CheckError(AudioFileOpenURL(
             audioFileURL,
             fsRdPerm,
             0,
-            &aqState->mAudioFile);
+            &aqState->mAudioFile
+          ), "AudioFileOpenURL failed");
+          
           CFRelease(audioFileURL);
-          return mResultCode;
+          return NULL;
         };
       }
-       
+      
       builder.c %{ 
-        int get_data_format_in_c(VALUE state) {
+        void setup_packet_descriptions_in_c(VALUE state) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
-          int mResultCode;
-          UInt32 dataFormatSize = sizeof (aqState->mDataFormat);
-          mResultCode = AudioFileGetProperty(
-            aqState->mAudioFile,
-            kAudioFilePropertyDataFormat,
-            &dataFormatSize,
-            &aqState->mDataFormat
-          );
-          return mResultCode;
-        };
-      }
-       
-      builder.c %{ 
-        int setup_buffers_in_c(VALUE state) {
-          AudioQueueState* aqState;
-          Data_Get_Struct(state, AudioQueueState, aqState);
-          int mResultCode;
           
-          UInt32 maxPacketSize;
-          UInt32 propertySize = sizeof (maxPacketSize);
-          mResultCode = AudioFileGetProperty(
-            aqState->mAudioFile,
-            kAudioFilePropertyPacketSizeUpperBound,
-            &propertySize,
-            &maxPacketSize);
-          
-          DeriveBufferSize(
-            aqState->mDataFormat,
-            maxPacketSize,
-            0.5,
-            &aqState->bufferByteSize,
-            &aqState->mNumPacketsToRead);
-          
-          bool isFormatVBR = (
-            aqState->mDataFormat.mBytesPerPacket == 0 ||
-            aqState->mDataFormat.mFramesPerPacket == 0
-          );
-          
-          if (isFormatVBR) {
-            aqState->mPacketDescs =
-              (AudioStreamPacketDescription*) ALLOC_N (
-                AudioStreamPacketDescription*,
-                aqState->mNumPacketsToRead * sizeof (AudioStreamPacketDescription));
+          if (aqState->isFormatVBR) {
+            aqState->mPacketDescs = ALLOC_N (
+                AudioStreamPacketDescription, aqState->mNumPacketsToRead);
           } else {
             aqState->mPacketDescs = NULL;
           }
           
-          return mResultCode;
+          return NULL;
         };
       }
        
       builder.c %{ 
-        int set_magic_cookie_in_c(VALUE state) {
+        void get_data_format_in_c(VALUE state) {
+          AudioQueueState* aqState;
+          Data_Get_Struct(state, AudioQueueState, aqState);
+          
+          UInt32 dataFormatSize = sizeof (aqState->mDataFormat);
+          CheckError(AudioFileGetProperty(
+            aqState->mAudioFile,
+            kAudioFilePropertyDataFormat,
+            &dataFormatSize,
+            &aqState->mDataFormat
+          ), "AudioFileGetProperty failed");
+          aqState->mSampleRate = aqState->mDataFormat.mSampleRate;
+          aqState->mFramesPerPacket = aqState->mDataFormat.mFramesPerPacket;
+          aqState->mBytesPerPacket = aqState->mDataFormat.mBytesPerPacket;
+          
+          aqState->isFormatVBR = (
+            aqState->mDataFormat.mBytesPerPacket == 0 ||
+            aqState->mDataFormat.mFramesPerPacket == 0
+          );
+          
+          UInt32 propertySize = sizeof (aqState->maxPacketSize);
+          CheckError(AudioFileGetProperty(
+            aqState->mAudioFile,
+            kAudioFilePropertyPacketSizeUpperBound,
+            &propertySize,
+            &aqState->maxPacketSize
+          ), "AudioFileGetProperty failed");
+          
+          return NULL;
+        };
+      }
+       
+      builder.c %{ 
+        void new_output_in_c(VALUE state) {
+          AudioQueueState* aqState;
+          Data_Get_Struct(state, AudioQueueState, aqState);
+          
+          CheckError(AudioQueueNewOutput(
+            &aqState->mDataFormat, 
+            HandleOutputBuffer, 
+            &aqState, 
+            NULL, 
+            NULL, 
+            0, 
+            &aqState->mQueue
+          ), "AudioQueueNewOutput failed");
+          
+          return NULL;
+        };
+      }
+       
+      builder.c %{ 
+        void set_magic_cookie_in_c(VALUE state) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
           
@@ -335,20 +300,21 @@ class WaveHeart
             );
           
           if (!couldNotGetProperty && cookieSize) {
-            char* magicCookie =
-              (char *) ALLOC_N (char *, cookieSize);
+            char* magicCookie = ALLOC_N (char, cookieSize);
             
-            AudioFileGetProperty(
+            CheckError(AudioFileGetProperty(
               aqState->mAudioFile,
               kAudioFilePropertyMagicCookieData,
               &cookieSize,
-              magicCookie);
+              magicCookie
+            ), "AudioFileGetProperty failed");
             
-            AudioQueueSetProperty(
+            CheckError(AudioQueueSetProperty(
               aqState->mQueue,
               kAudioQueueProperty_MagicCookie,
               magicCookie,
-              cookieSize);
+              cookieSize
+            ), "AudioQueueSetProperty failed");
           }
           
           return NULL;
@@ -356,18 +322,18 @@ class WaveHeart
       }
        
       builder.c %{ 
-        int prime_buffers_in_c(VALUE state) {
+        void prime_buffers_in_c(VALUE state) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
-          int mResultCode;
           
           aqState->mCurrentPacket = 0;
           
           for (int i = 0; i < kNumberBuffers; ++i) {
-            mResultCode = AudioQueueAllocateBuffer(
+            CheckError(AudioQueueAllocateBuffer(
               aqState->mQueue,
               aqState->bufferByteSize,
-              &aqState->mBuffers[i]);
+              &aqState->mBuffers[i]
+            ), "AudioQueueAllocateBuffer failed");
             
             HandleOutputBuffer(
               &aqState,
@@ -375,9 +341,39 @@ class WaveHeart
               aqState->mBuffers[i]);
           }
           
-          return mResultCode;
+          return NULL;
         };
       }
+    end
+    
+    # Calculate what to read as the audio queue drains.
+    #
+    def self.derive_buffer_size(
+      sample_rate,                        # UInt32                     
+      frames_per_packet,                  # UInt32                     
+      max_packet_size,                    # UInt32                     
+      seconds )                           # UInt32                     
+      
+      if frames_per_packet != 0
+        num_packets_for_time =
+          sample_rate / frames_per_packet * seconds
+        out_buffer_size = num_packets_for_time * max_packet_size
+      else
+        out_buffer_size =
+          MaxBufferSize > max_packet_size ?
+            MaxBufferSize : max_packet_size
+      end
+      
+      if out_buffer_size > MaxBufferSize &&
+        out_buffer_size > max_packet_size
+          out_buffer_size = MaxBufferSize
+      elsif out_buffer_size < MinBufferSize
+        out_buffer_size = MinBufferSize
+      end
+      
+      out_num_packets_to_read = out_buffer_size / max_packet_size;
+      
+      [out_buffer_size, out_num_packets_to_read]
     end
   end
 end

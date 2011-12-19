@@ -3,7 +3,10 @@
 framework 'AppKit'
 framework 'AudioToolbox'
 
+require "rubygems"
+require "inline"
 require "wave_heart/audio_queue"
+require "wave_heart/audio_queue/state"
 
 class WaveHeart
   
@@ -32,12 +35,15 @@ class WaveHeart
   
   class AppDelegate
     def applicationDidFinishLaunching(notification)
-      v = Vessel.new('/Users/Shared/Jukebox/Music/Air/Talkie Walkie/10 Alone in Kyoto.m4a')
+      #v = Vessel.new('/Users/Shared/Jukebox/Music/Air/Talkie Walkie/10 Alone in Kyoto.m4a')
+      v = Vessel.new('/System/Library/Sounds/Sosumi.aiff')
     end
   end
 end
 
-app = NSApplication.sharedApplication
-app.delegate = WaveHeart::AppDelegate.new
-app.run
+if $0 == __FILE__
+  app = NSApplication.sharedApplication
+  app.delegate = WaveHeart::AppDelegate.new
+  app.run
+end
 
