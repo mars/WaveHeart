@@ -52,3 +52,42 @@ Audio queue property debugging:
                 aqState->bufferByteSize,
                 &aqState->mBuffers[i]);
             }
+            
+            
+            
+            
+          
+          
+            UInt32 numBytes;
+            UInt32 numPackets = aqState->mNumPacketsToRead;
+            UInt32 currentPacket = 1;
+          
+            CheckError(AudioFileReadPackets(
+              aqState->mAudioFile,
+              false,
+              &numBytes,
+              aqState->mPacketDescs, 
+              currentPacket,
+              &numPackets,
+              aqState->mBuffers[i]
+            ), "prime (test) AudioFileReadPackets failed");
+            
+            
+            
+            
+            
+            
+          
+          Boolean done = false;
+          CFRunLoopTimerContext context = {0, &aqState, NULL, NULL, NULL};
+          CFRunLoopTimerRef timer = CFRunLoopTimerCreate(
+            kCFAllocatorDefault, 0.1, 10, 0, 0, Beat, &context);
+          CFRunLoopAddTimer(aqState->mRunLoop, timer, kCFRunLoopCommonModes);
+          
+          do {
+              SInt32 result = CFRunLoopRunInMode(kCFRunLoopDefaultMode, 10, true);
+              if ((result == kCFRunLoopRunStopped) || (result == kCFRunLoopRunFinished))
+                  done = true;
+          } while (!done);
+          
+          CFRelease(timer);

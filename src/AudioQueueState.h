@@ -1,17 +1,19 @@
-static const int kNumberBuffers = 3;
+static const int kNumberPlaybackBuffers = 3;
 
-typedef struct AudioQueueState {
+typedef struct {
   AudioStreamBasicDescription   mDataFormat;
   AudioQueueRef                 mQueue;
-  AudioQueueBufferRef           mBuffers[kNumberBuffers];
+  CFRunLoopRef                  mRunLoop;
   AudioFileID                   mAudioFile;
+  UInt32                        mAudioFileByteSize;
+  UInt32                        mAudioFileTotalPackets;
   UInt32                        bufferByteSize;
   SInt64                        mCurrentPacket;
   UInt32                        mNumPacketsToRead;
   AudioStreamPacketDescription  *mPacketDescs;
-  Boolean                       mIsRunning;
-  Boolean                       isFormatVBR;
-  UInt32                        mSampleRate;
+  UInt32                        mIsRunning;
+  UInt32                        isFormatVBR;
+  double                        mSampleRate;
   UInt32                        mFramesPerPacket;
   UInt32                        mBytesPerPacket;
   UInt32                        maxPacketSize;
