@@ -11,44 +11,24 @@ class WaveHeart
     attr_reader :state, :data_format, :buffer_seconds, :is_primed, :run_loop_thread
     
     def initialize
-      puts "#{self.class}#initialize"
       @is_primed = false
       @state = State.new
       self
     end
     
     def open(audio_file_url)
-      puts "#{self.class}#open"
       @is_primed = false
-      puts "#{self.class}#open_audio_file_in_c"
       open_audio_file_in_c @state, audio_file_url
-      
-      puts "#{self.class}#get_data_format_in_c"
       get_data_format_in_c @state
-      
-      
-      puts "sample rate #{@state.format_sample_rate}, frames per packet #{@state.format_frames_per_packet}, max packet size #{@state.format_max_packet_size}, buffer seconds #{buffer_seconds}"
-      puts "#{self.class}#calculate_buffer(#{@state.format_sample_rate}, #{@state.format_frames_per_packet}, #{@state.format_max_packet_size}, #{buffer_seconds})"
       calculate_buffer
-      puts " => buffer_byte_size #{@state.buffer_byte_size} num_packets_to_read #{@state.num_packets_to_read}"
-      
-      puts "#{self.class}#setup_packet_descriptions_in_c"
       setup_packet_descriptions_in_c @state
     end
     
     def play
-      puts "#{self.class}#play"
       get_run_loop
-      
-      puts "#{self.class}#new_output_in_c"
       new_output_in_c @state
-      
-      puts "#{self.class}#set_magic_cookie_in_c"
       set_magic_cookie_in_c @state
-      
       @state.is_running = 1
-      
-      puts "@state.is_running #{@state.is_running.inspect}"
       prime unless @is_primed
       gain = 1.0
       start_in_c @state
@@ -60,13 +40,11 @@ class WaveHeart
     end
     
     def stop
-      puts "#{self.class}#stop"
       stop_in_c @state
       @state.is_running = 0
     end
     
     def gain=(f)
-      puts "#{self.class}#gain=(#{f.inspect})"
       set_audio_queue_param_in_c @state, KAudioQueueParam_Volume, f
     end
     
@@ -75,7 +53,6 @@ class WaveHeart
     end
     
     def get_run_loop
-      puts "#{self.class}#get_run_loop"
       @run_loop_thread ||= begin
         thread = NSThread.alloc.initWithTarget( 
           self, selector: 'get_run_loop_in_c:', object: @state )
@@ -85,14 +62,11 @@ class WaveHeart
     end
     
     def prime
-      puts "#{self.class}#prime"
-      puts "RunLoop executing #{@run_loop_thread.executing?} finished #{@run_loop_thread.finished?} cancelled #{@run_loop_thread.cancelled?}"
       prime_buffers_in_c @state
       @is_primed = true
     end
     
     def cleanup
-      puts "#{self.class}#cleanup"
       return if @state.is_running > 0
       cleanup_in_c @state
     end
@@ -131,29 +105,20 @@ class WaveHeart
           AudioQueueRef                 inAQ, 
           AudioQueueBufferRef           inBuffer) {
           
-          AudioQueueState aqs = *((AudioQueueState *) inUserData);
+          AudioQueueState *aqs = (AudioQueueState *) inUserData;
+          if (!aqs->mIsRunning) return;
           
-          fprintf(stderr, "aqs.mAudioFileByteSize => %d\\n", aqs.mAudioFileByteSize);
-          fprintf(stderr, "aqs.isFormatVBR => %d\\n", aqs.isFormatVBR);
-          fprintf(stderr, "aqs.mIsRunning => %d\\n", aqs.mIsRunning);
-          
-          if (!aqs.mIsRunning) {
-            fprintf(stderr, "Not running, so HandleOutputBuffer returns.\\n");
-            return;
-          } else {
-            fprintf(stderr, "Running, so HandleOutputBuffer is gettin' er done.\\n");
-          }
           UInt32 numBytes = 0;
-          UInt32 numPackets = aqs.mNumPacketsToRead;
+          UInt32 numPackets = aqs->mNumPacketsToRead;
           
-          fprintf(stderr, "Reading %d packets from position %f in HandleOutputBuffer.\\n", numPackets, aqs.mCurrentPacket);
+          // fprintf(stderr, "Reading %d packets from position %lld in HandleOutputBuffer.\\n", numPackets, aqs->mCurrentPacket);
           
           CheckError(AudioFileReadPackets(
             theAudioFile,
             false,
             &numBytes,
-            aqs.mPacketDescs, 
-            aqs.mCurrentPacket,
+            aqs->mPacketDescs, 
+            aqs->mCurrentPacket,
             &numPackets,
             inBuffer->mAudioData 
           ), "HandleOutputBuffer AudioFileReadPackets failed");
@@ -161,16 +126,15 @@ class WaveHeart
           if (numPackets > 0) {
             inBuffer->mAudioDataByteSize = numBytes;
             CheckError(AudioQueueEnqueueBuffer( 
-              aqs.mQueue,
+              aqs->mQueue,
               inBuffer,
-              (aqs.mPacketDescs ? numPackets : 0),
-              aqs.mPacketDescs
+              (aqs->mPacketDescs ? numPackets : 0),
+              aqs->mPacketDescs
             ), "HandleOutputBuffer AudioQueueEnqueueBuffer failed");
-            aqs.mCurrentPacket += numPackets;
+            aqs->mCurrentPacket += numPackets;
           } else {
-            fprintf(stderr, "Out of packets, so HandleOutputBuffer is stoppin'.\\n");
-            AudioQueueStop(aqs.mQueue, false);
-            aqs.mIsRunning = 0; 
+            AudioQueueStop(aqs->mQueue, false);
+            aqs->mIsRunning = 0; 
           }
         }
       }
@@ -320,12 +284,6 @@ class WaveHeart
             &aqState->mAudioFileTotalPackets
           ), "AudioFileGetProperty kAudioFilePropertyAudioDataPacketCount in HandleOutputBuffer");
           
-          fprintf(stderr, "Audio file has %d total packets.\\n", aqState->mAudioFileTotalPackets);
-          fprintf(stderr, "Audio file has %d bytes.\\n", aqState->mAudioFileByteSize);
-          fprintf(stderr, "Audio file has %f sample rate.\\n", aqState->mSampleRate);
-          fprintf(stderr, "Audio file has %d frames per packet.\\n", aqState->mFramesPerPacket);
-          fprintf(stderr, "Audio file has %d bytes per packet.\\n", aqState->mBytesPerPacket);
-          
           return NULL;
         };
       }
@@ -360,8 +318,8 @@ class WaveHeart
           CheckError(AudioQueueNewOutput(
             &aqState->mDataFormat, 
             HandleOutputBuffer, 
-            &aqState, 
-            NULL, 
+            aqState, 
+            aqState->mRunLoop, 
             kCFRunLoopCommonModes, 
             0, 
             &aqState->mQueue
@@ -411,14 +369,9 @@ class WaveHeart
         void prime_buffers_in_c(VALUE state) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
-          AudioQueueState aqs = *aqState;
           
           AudioQueueBufferRef buffers[kNumberPlaybackBuffers];
           aqState->mCurrentPacket = 0;
-          
-          fprintf(stderr, "aqState->mAudioFileByteSize => %d\\n", aqState->mAudioFileByteSize);
-          fprintf(stderr, "aqState->isFormatVBR => %d\\n", aqState->isFormatVBR);
-          fprintf(stderr, "aqState->mIsRunning => %d\\n", aqState->mIsRunning);
           
           for (int i = 0; i < kNumberPlaybackBuffers; ++i) {
             CheckError(AudioQueueAllocateBuffer(
@@ -428,7 +381,7 @@ class WaveHeart
             ), "AudioQueueAllocateBuffer failed");
             
             HandleOutputBuffer(
-              &aqs,
+              aqState,
               aqState->mQueue,
               buffers[i]);
           }
@@ -465,7 +418,6 @@ class WaveHeart
       
       out_num_packets_to_read = out_buffer_size / max_packet_size
       
-      puts "class calculate_buffer => out_buffer_size #{out_buffer_size} out_num_packets_to_read #{out_num_packets_to_read}"
       [out_buffer_size, out_num_packets_to_read]
     end
     
@@ -478,12 +430,8 @@ class WaveHeart
       out_buffer_size, num_packets = self.class.calculate_buffer_for(
         @state.format_sample_rate, @state.format_frames_per_packet, @state.format_max_packet_size, buffer_seconds)
       
-      puts "in calculate_buffer => out_buffer_size #{out_buffer_size} num_packets #{num_packets} total_packets #{@state.file_total_packets}"
-      
       out_num_packets_to_read = num_packets > @state.file_total_packets ? 
         @state.file_total_packets : num_packets
-      
-      puts "out calculate_buffer => out_buffer_size #{out_buffer_size} out_num_packets_to_read #{out_num_packets_to_read}"
       
       @state.buffer_byte_size, @state.num_packets_to_read = out_buffer_size, out_num_packets_to_read
     end
