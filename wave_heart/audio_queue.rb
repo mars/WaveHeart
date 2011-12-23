@@ -78,8 +78,6 @@ class WaveHeart
       builder.include '<AudioToolbox/AudioToolbox.h>'
       builder.include '<AudioQueueState.h>'
       builder.prefix %{
-        static AudioFileID theAudioFile;
-        
         static void CheckError(OSStatus error, const char *operation) {
           if (error == noErr) return;
           char errorString[20];
@@ -114,7 +112,7 @@ class WaveHeart
           // fprintf(stderr, "Reading %d packets from position %lld in HandleOutputBuffer.\\n", numPackets, aqs->mCurrentPacket);
           
           CheckError(AudioFileReadPackets(
-            theAudioFile,
+            aqs->mAudioFile,
             false,
             &numBytes,
             aqs->mPacketDescs, 
@@ -178,7 +176,7 @@ class WaveHeart
           Data_Get_Struct(state, AudioQueueState, aqState);
           int mResultCode;
           mResultCode = AudioQueueDispose(aqState->mQueue, true);
-          AudioFileClose(theAudioFile);
+          AudioFileClose(aqState->mAudioFile);
           CFRelease(aqState->mRunLoop);
           return mResultCode;
         };
@@ -188,7 +186,6 @@ class WaveHeart
         void open_audio_file_in_c(VALUE state, VALUE filePath) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
-          AudioQueueState aqs = *aqState;
           
           VALUE str = StringValue(filePath);
           const char *fp = RSTRING_PTR(str);
@@ -204,7 +201,7 @@ class WaveHeart
             audioFileURL,
             fsRdPerm,
             0,
-            &theAudioFile
+            &aqState->mAudioFile
           ), "AudioFileOpenURL failed");
           
           CFRelease(audioFileURL);
@@ -232,11 +229,10 @@ class WaveHeart
         void get_data_format_in_c(VALUE state) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
-          AudioQueueState aqs = *aqState;
           
           UInt32 dataFormatSize = sizeof (aqState->mDataFormat);
           CheckError(AudioFileGetProperty(
-            theAudioFile,
+            aqState->mAudioFile,
             kAudioFilePropertyDataFormat,
             &dataFormatSize,
             &aqState->mDataFormat
@@ -252,33 +248,33 @@ class WaveHeart
           
           UInt32 propertySize = sizeof (aqState->maxPacketSize);
           CheckError(AudioFileGetProperty(
-            theAudioFile,
+            aqState->mAudioFile,
             kAudioFilePropertyPacketSizeUpperBound,
             &propertySize,
             &aqState->maxPacketSize
           ), "AudioFileGetProperty kAudioFilePropertyPacketSizeUpperBound failed");
           
           AudioFileGetPropertyInfo (
-            theAudioFile,
+            aqState->mAudioFile,
             kAudioFilePropertyAudioDataByteCount,
             &propertySize,
             NULL
           );
           CheckError(AudioFileGetProperty(
-            theAudioFile,
+            aqState->mAudioFile,
             kAudioFilePropertyAudioDataByteCount,
             &propertySize,
             &aqState->mAudioFileByteSize
           ), "AudioFileGetProperty kAudioFilePropertyAudioDataByteCount in HandleOutputBuffer");
           
           AudioFileGetPropertyInfo (
-            theAudioFile,
+            aqState->mAudioFile,
             kAudioFilePropertyAudioDataPacketCount,
             &propertySize,
             NULL
           );
           CheckError(AudioFileGetProperty(
-            theAudioFile,
+            aqState->mAudioFile,
             kAudioFilePropertyAudioDataPacketCount,
             &propertySize,
             &aqState->mAudioFileTotalPackets
@@ -337,7 +333,7 @@ class WaveHeart
           UInt32 cookieSize = sizeof (UInt32);
           bool couldNotGetProperty =
             AudioFileGetPropertyInfo(
-              theAudioFile,
+              aqState->mAudioFile,
               kAudioFilePropertyMagicCookieData,
               &cookieSize,
               NULL
@@ -347,7 +343,7 @@ class WaveHeart
             char* magicCookie = ALLOC_N (char, cookieSize);
             
             CheckError(AudioFileGetProperty(
-              theAudioFile,
+              aqState->mAudioFile,
               kAudioFilePropertyMagicCookieData,
               &cookieSize,
               magicCookie
