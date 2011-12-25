@@ -1,42 +1,33 @@
-# MacRuby 0.10
+# MacRuby 0.12
 
 framework 'AppKit'
 framework 'AudioToolbox'
 
 require "rubygems"
 require "inline"
-require "wave_heart/audio_queue"
+require "wave_heart/audio_queue/parameters"
 require "wave_heart/audio_queue/state"
+require "wave_heart/audio_queue"
+require "wave_heart/server"
 
 class WaveHeart
   
-  # An AudioQueue pushing an audio stream into CoreAudio HAL.
-  #
-  class Vessel
-    
-    BufferCount = 3
-    
-    attr_reader :audio_queue, :audio_file_url
-    
-    def initialize(file_path=nil)
-      puts "#{self.class}#initialize"
-      @audio_file_url = file_path
-      @audio_queue = AudioQueue.new
-      load
-    end
-    
-    def load(file_path=nil)
-      puts "#{self.class}#load"
-      @audio_file_url = file path if file_path
-      @audio_queue.open(@audio_file_url)
-      @audio_queue.play
-    end
+  def self.api_request(params)
+    { "audio_queues" => AudioQueue::All.collect {|aq| aq.audio_file_url } }
   end
   
   class AppDelegate
     def applicationDidFinishLaunching(notification)
-      #v = Vessel.new('/Users/Shared/Jukebox/Music/Air/Talkie Walkie/10 Alone in Kyoto.m4a')
-      v = Vessel.new('/System/Library/Sounds/Sosumi.aiff')
+      start_server
+      #aq = AudioQueue.new('/Users/Shared/Jukebox/Music/Air/Talkie Walkie/10 Alone in Kyoto.m4a').play
+      #aq2 = AudioQueue.new('/Users/Shared/Jukebox/Music/Kodo/sai-so/03 Wax Off.mp3').play
+      #aq3 = AudioQueue.new('/System/Library/Sounds/Sosumi.aiff').play
+    end
+    
+    def start_server
+      @server_thread ||= Thread.new do
+        WaveHeart::Server.start
+      end
     end
   end
 end

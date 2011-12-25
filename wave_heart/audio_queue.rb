@@ -2,73 +2,67 @@ class WaveHeart
   
   # An object-oriented interface for Apple's AudioToolbox audio queue
   #
+  # http://developer.apple.com/library/mac/#documentation/MusicAudio/Reference/AudioQueueReference
+  #
   class AudioQueue
+    include Parameters
+    
+    All = []
     
     BufferSeconds = 5
     MaxBufferSize = 327680 # 320KB
     MinBufferSize = 16384 # 16KB
     
-    attr_reader :state, :data_format, :buffer_seconds, :is_primed, :run_loop_thread
+    attr_reader :audio_file_url, :state, :data_format, :buffer_seconds, :is_primed, :run_loop_thread
     
-    def initialize
+    def initialize(audio_file_url=nil)
       @is_primed = false
       @state = State.new
-      self
+      open audio_file_url if audio_file_url
+      All << self
     end
     
     def open(audio_file_url)
       @is_primed = false
-      open_audio_file_in_c @state, audio_file_url
+      @audio_file_url = audio_file_url
+      open_audio_file_in_c @state, @audio_file_url
       get_data_format_in_c @state
       calculate_buffer
       setup_packet_descriptions_in_c @state
+      self
     end
     
-    def play
+    def prime
       get_run_loop
       new_output_in_c @state
       set_magic_cookie_in_c @state
+      prime_buffers_in_c @state
+      @is_primed = true
+      self
+    end
+    
+    def play
       @state.is_running = 1
       prime unless @is_primed
-      gain = 1.0
       start_in_c @state
-      while @state.is_running > 0 do
-         CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
-      end
-      CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
-      cleanup
+      # while @state.is_running > 0 do
+      #    CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
+      # end
+      # CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
+      # cleanup
+      self
     end
     
     def stop
       stop_in_c @state
       @state.is_running = 0
-    end
-    
-    def gain=(f)
-      set_audio_queue_param_in_c @state, KAudioQueueParam_Volume, f
-    end
-    
-    def buffer_seconds
-      @buffer_seconds ||= BufferSeconds
-    end
-    
-    def get_run_loop
-      @run_loop_thread ||= begin
-        thread = NSThread.alloc.initWithTarget( 
-          self, selector: 'get_run_loop_in_c:', object: @state )
-        thread.start
-        thread
-      end
-    end
-    
-    def prime
-      prime_buffers_in_c @state
-      @is_primed = true
+      self
     end
     
     def cleanup
-      return if @state.is_running > 0
+      return self if @state.is_running > 0
       cleanup_in_c @state
+      self
     end
     
     inline(:C) do |builder|
@@ -76,27 +70,10 @@ class WaveHeart
       builder.include '<CoreFoundation/CoreFoundation.h>'
       builder.include '<CoreServices/CoreServices.h>'
       builder.include '<AudioToolbox/AudioToolbox.h>'
+      builder.include '<utils.h>'
       builder.include '<AudioQueueState.h>'
       builder.prefix %{
-        static void CheckError(OSStatus error, const char *operation) {
-          if (error == noErr) return;
-          char errorString[20];
-          // See if it appears to be a 4-char-code
-          *(UInt32 *)(errorString + 1) = CFSwapInt32HostToBig(error);
-          if (isprint(errorString[1]) && isprint(errorString[2]) &&
-              isprint(errorString[3]) && isprint(errorString[4])) {
-              errorString[0] = errorString[5] = '\\'';
-              errorString[6] = '\\0';
-          } else
-              // No, format it as an integer
-              sprintf(errorString, "%d", (int)error);
-          fprintf(stderr, "Error: %s (%s)\\n", operation, errorString);
-          exit(1);
-        }
-        
-        static void Beat(CFRunLoopTimerRef timer, void *aqState) {
-          
-        }
+        static void Beat(CFRunLoopTimerRef timer, void *aqState) {}
         
         static void HandleOutputBuffer(
           void                          *inUserData,
@@ -135,17 +112,6 @@ class WaveHeart
             aqs->mIsRunning = 0; 
           }
         }
-      }
-       
-      builder.c %{ 
-        void set_audio_queue_param_in_c(VALUE state, VALUE param, VALUE value) {
-          AudioQueueState* aqState;
-          Data_Get_Struct(state, AudioQueueState, aqState);
-          CheckError(AudioQueueSetParameter(
-            aqState->mQueue, param, value
-          ), "AudioQueueSetParameter failed");
-          return NULL;
-        };
       }
        
       builder.c %{ 
@@ -430,6 +396,19 @@ class WaveHeart
         @state.file_total_packets : num_packets
       
       @state.buffer_byte_size, @state.num_packets_to_read = out_buffer_size, out_num_packets_to_read
+    end
+    
+    def buffer_seconds
+      @buffer_seconds ||= BufferSeconds
+    end
+    
+    def get_run_loop
+      @run_loop_thread ||= begin
+        thread = NSThread.alloc.initWithTarget( 
+          self, selector: 'get_run_loop_in_c:', object: @state )
+        thread.start
+        thread
+      end
     end
   end
 end
