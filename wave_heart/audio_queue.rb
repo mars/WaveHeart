@@ -7,6 +7,9 @@ class WaveHeart
   class AudioQueue
     include Parameters
     
+    class Error < ::StandardError; end
+    class NotFound < WaveHeart::AudioQueue::Error; end
+    
     All = []
     
     BufferSeconds = 5
@@ -20,6 +23,53 @@ class WaveHeart
       @state = State.new
       open audio_file_url if audio_file_url
       All << self
+    end
+    
+    def to_h
+      {
+        "audio_file_url" => @audio_file_url,
+        "is_running" => @state.is_running > 0,
+        "volume" => volume
+      }
+    end
+    
+    def self.process_request(params)
+      is_http_request = params[:http_headers] && 
+        params[:http_headers][0] =~ /^(GET|PUT|POST|DELETE)\s([^\s]+)\s([^\s]+)/i
+      raise(ArgumentError, 
+        "A valid HTTP request is required. Got: #{params[:http_headers].inspect}") unless 
+          is_http_request
+      request_match = $~
+      case request_match[1]
+      when /GET/i
+        case request_match[2]
+        when /^\/$/
+          { "audio_queues" => All.collect {|aq| aq.audio_file_url } }
+        when /^\/(\d+)$/
+          id = $~[1].to_i
+          queue = All[id]
+          raise(NotFound, "Audio Queue ID #{id} not found") unless queue
+          { "audio_queue" => queue.to_h }
+        else
+          raise(NotFound, "Resource not found: #{request_match[1]} #{request_match[2]}")
+        end
+      when /PUT/i
+        case request_match[2]
+        when /^\/(\d+)\/([^\?\#\/]+)(\/([^\?\#\/]+)|)/
+          id = $~[1].to_i
+          queue = All[id]
+          raise(NotFound, "Audio Queue ID #{id} not found") unless queue
+          action = $~[2]
+          value = $~[4]
+          send_args = value ? ["#{action}=", value] : [action]
+          queue.send(*send_args)
+          { "audio_queue" => queue.to_h }
+        else
+          raise(NotFound, "Resource not found: #{request_match[1]} #{request_match[2]}")
+        end
+      else
+        raise(ArgumentError, "Unsupported HTTP verb: #{request_match[1]}")
+      end
     end
     
     def open(audio_file_url)
@@ -45,11 +95,17 @@ class WaveHeart
       @state.is_running = 1
       prime unless @is_primed
       start_in_c @state
-      # while @state.is_running > 0 do
+      # TODO while @state.is_running > 0 do
       #    CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
       # end
       # CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
       # cleanup
+      self
+    end
+    
+    def pause
+      pause_in_c @state
+      @state.is_running = 0
       self
     end
     
@@ -132,6 +188,17 @@ class WaveHeart
           CheckError(AudioQueueStop(
             aqState->mQueue, false
           ), "AudioQueueStop failed");
+          return NULL;
+        };
+      }
+       
+      builder.c %{ 
+        void pause_in_c(VALUE state) {
+          AudioQueueState* aqState;
+          Data_Get_Struct(state, AudioQueueState, aqState);
+          CheckError(AudioQueuePause(
+            aqState->mQueue
+          ), "AudioQueuePause failed");
           return NULL;
         };
       }

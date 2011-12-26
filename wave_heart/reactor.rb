@@ -4,18 +4,43 @@ require 'eventmachine'
 
 class WaveHeart
   
-  # HTTP control API
-  class Server < EM::P::HeaderAndContentProtocol
+  # Response to events; the HTTP REST API
+  class Reactor < EM::P::HeaderAndContentProtocol
+    
+    def self.start(opts=nil)
+      opts = {} unless Hash==opts
+      socket = opts[:socket]
+      port = opts[:port] || 3333
+      ip_address = opts[:ip_address] || '0.0.0.0'
+      
+      @thread = Thread.new do
+        EM.kqueue
+        EM.run do
+          args = (socket ? [socket, nil] : [ip_address, port])
+          Thread.current[:http_server_sig] = EM.start_server(*(args + [self]))
+        end
+      end
+      
+      @thread[:http_server_sig]
+    end
+    
+    def self.stop
+      EM.stop_server(@thread[:http_server_sig]) if @thread[:http_server_sig]
+    end
+    
+    def self.thread
+      @thread
+    end
     
     def receive_request headers, content
       params = parse_request(headers, content)
-      data = WaveHeart.api_request(params)
+      data = WaveHeart::AudioQueue.process_request(params)
       send_response( 
         :status => '200 OK',
         :data => ActiveSupport::JSON.encode(data),
         :type => 'application/json' )
     rescue
-      data = {"error" => "#{$!.class} #{$!.message}\r\n#{$!.backtrace * "\r\n"}"}
+      data = {"error" => "#{$!.class} #{$!.message}"}
       send_response(
         :status => '500 Server Error',
         :data => ActiveSupport::JSON.encode(data),
@@ -41,18 +66,7 @@ class WaveHeart
       headers, body = build_response(content)
       send_data(headers.join)
       send_data(body)
-    end
-  
-    def self.start(opts={})
-      socket = opts[:socket]
-      port = opts[:port] || 3333
-      ip_address = opts[:ip_address] || '0.0.0.0'
-    
-      EM.kqueue
-      EM.run do
-        args = (socket ? [socket, nil] : [ip_address, port])
-        $server_sig = EM.start_server(*(args + [self]))
-      end
+      close_connection_after_writing
     end
     
   end
