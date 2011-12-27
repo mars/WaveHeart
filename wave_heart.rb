@@ -10,15 +10,16 @@ require "wave_heart/audio_queue/state"
 require "wave_heart/audio_queue"
 require "wave_heart/reactor"
 
-class WaveHeart
+module WaveHeart
   class AppDelegate
     attr_reader :reactor
     
     def applicationDidFinishLaunching(notification)
+      #@web_api = WaveHeart::WebApi.start
       @reactor = WaveHeart::Reactor.start
       aq = AudioQueue.new('/Users/Shared/Jukebox/Music/Air/Talkie Walkie/10 Alone in Kyoto.m4a').play
-      #aq2 = AudioQueue.new('/Users/Shared/Jukebox/Music/Kodo/sai-so/03 Wax Off.mp3').play
-      #aq3 = AudioQueue.new('/System/Library/Sounds/Sosumi.aiff').play
+      aq2 = AudioQueue.new('/Users/Shared/Jukebox/Music/Kodo/sai-so/03 Wax Off.mp3').play
+      aq3 = AudioQueue.new('/System/Library/Sounds/Sosumi.aiff').play
     end
   end
 end

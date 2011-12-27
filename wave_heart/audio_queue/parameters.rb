@@ -1,4 +1,4 @@
-class WaveHeart
+module WaveHeart
   class AudioQueue
     
     # Set and Get AudioQueue parameters
@@ -10,13 +10,13 @@ class WaveHeart
       #
       def volume=(f)
         raise ArgumentError, "Volume must be between 0.0 & 1.0" unless (0.0..1.0).include? f.to_f
-        set_audio_queue_param_in_c @state, KAudioQueueParam_Volume, f.to_f
+        set_audio_queue_param KAudioQueueParam_Volume, f.to_f
         self
       end
       
       def volume
         return unless @is_primed
-        get_audio_queue_param_in_c @state, KAudioQueueParam_Volume
+        get_audio_queue_param KAudioQueueParam_Volume
       end
       
       # The number of seconds over which a volume change is ramped.
@@ -25,13 +25,13 @@ class WaveHeart
       #
       def volume_ramp_seconds=(f)
         raise ArgumentError, "Volume ramp time must be 0.0 or greater" unless f.to_f >= 0.0
-        set_audio_queue_param_in_c @state, KAudioQueueParam_VolumeRampTime, f.to_f
+        set_audio_queue_param KAudioQueueParam_VolumeRampTime, f.to_f
         self
       end
       
       def volume_ramp_seconds
         return unless @is_primed
-        get_audio_queue_param_in_c @state, KAudioQueueParam_VolumeRampTime
+        get_audio_queue_param KAudioQueueParam_VolumeRampTime
       end
       
       # The stereo panning position of a source. For a monophonic source, panning is determined as follows:
@@ -43,13 +43,25 @@ class WaveHeart
       #
       def pan=(f)
         raise ArgumentError, "Pan must be between -1.0 & 1.0" unless (-1.0..1.0).include? f.to_f
-        set_audio_queue_param_in_c @state, KAudioQueueParam_Pan, f.to_f
+        set_audio_queue_param KAudioQueueParam_Pan, f.to_f
         self
       end
       
       def pan
         return unless @is_primed
-        get_audio_queue_param_in_c @state, KAudioQueueParam_Pan
+        get_audio_queue_param KAudioQueueParam_Pan
+      end
+      
+      # Generic AudioQueue parameter setter
+      #
+      def set_audio_queue_param(name, value)
+        set_audio_queue_param_in_c @state, name, value
+      end
+      
+      # Generic AudioQueue parameter getter
+      #
+      def get_audio_queue_param(name)
+        get_audio_queue_param_in_c @state, name
       end
     
       inline(:C) do |builder|

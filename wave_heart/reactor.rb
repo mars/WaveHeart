@@ -2,7 +2,7 @@ require 'rubygems'
 require 'active_support'
 require 'eventmachine'
 
-class WaveHeart
+module WaveHeart
   
   # Response to events; the HTTP REST API
   class Reactor < EM::P::HeaderAndContentProtocol
@@ -53,11 +53,13 @@ class WaveHeart
     end
     
     def build_response(content)
+      content[:data] += "\r\n" if 
+        content[:data] && !(/\r\n$/===content[:data])
       r = []
       r << "HTTP/1.0 #{content[:status]}\r\n"
       r << "Date: #{Time.now}\r\n"
       r << "Content-Type: #{content[:type]}\r\n"
-      r << "Content-Length: #{content[:data].size}\r\n"
+      r << "Content-Length: #{content[:data].bytesize}\r\n"
       r << "\r\n"
       [r, content[:data]]
     end

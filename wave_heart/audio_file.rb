@@ -1,4 +1,4 @@
-class WaveHeart
+module WaveHeart
   
   # audio file utilities
   #

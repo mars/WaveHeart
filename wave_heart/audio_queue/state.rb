@@ -1,8 +1,16 @@
-class WaveHeart
+module WaveHeart
   class AudioQueue
     
     # C-structure wrapped in a Ruby object
     class State
+      
+      def with_lock
+        @state_lock ||= NSLock.alloc.init
+        @state_lock.lock
+        yield
+      ensure
+        @state_lock.unlock
+      end
       
       inline(:C) do |builder|
         builder.add_compile_flags '-x c++', '-lstdc++', '-I ./src'
