@@ -12,6 +12,10 @@ describe WaveHeart::AudioQueue, "#initialize" do
     @aq.state.is_running.should == 0
   end
   
+  it "c-methods are private" do
+    lambda { @aq.get_data_format_in_c(@aq.state) }.should raise_error(NoMethodError)
+  end
+  
 end
 
 describe WaveHeart::AudioQueue, "#open" do

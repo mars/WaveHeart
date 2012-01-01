@@ -5,11 +5,19 @@ module WaveHeart
   # http://developer.apple.com/library/mac/#documentation/MusicAudio/Reference/AudioQueueReference
   #
   class AudioQueue
+    include Operations
     include Parameters
     
-    class Error < ::StandardError; end
-    class NotFound < WaveHeart::AudioQueue::Error; end
+    def self.api_methods
+      @api_methods = Operations.instance_methods + Parameters.instance_methods
+    end
     
+    def self.api_method?(v)
+      api_methods.include?(v.to_sym)
+    end
+    
+    # Thread safety for access to the collection of all queues.
+    #
     def self.with_lock
       AllLock.lock
       yield
@@ -17,6 +25,9 @@ module WaveHeart
       AllLock.unlock
     end
     
+    # Thread safe execution of a block with the collection all audio 
+    # queues as the argument.
+    #
     def self.with_all
       with_lock do
         yield All
@@ -32,12 +43,15 @@ module WaveHeart
     
     attr_reader :audio_file_url, :state, :data_format, :buffer_seconds, :is_primed
     
+    # Accepts a block to do work during the All lock.
+    #
     def initialize(audio_file_url=nil)
       @is_primed = false
       @state = State.new
       open audio_file_url if audio_file_url
       self.class.with_lock do
         All << self
+        yield(self) if block_given?
       end
     end
     
@@ -46,108 +60,11 @@ module WaveHeart
         {
           "audio_file_url" => @audio_file_url,
           "is_running" => @state.is_running > 0,
-          "volume" => volume
+          "volume" => volume,
+          "pan" => pan,
+          "volume_ramp_seconds" => volume_ramp_seconds
         }
       end
-    end
-    
-    def self.process_request(params)
-      is_http_request = params[:http_headers] && 
-        params[:http_headers][0] =~ /^(GET|PUT|POST|DELETE)\s([^\s]+)\s([^\s]+)/i
-      raise(ArgumentError, 
-        "A valid HTTP request is required. Got: #{params[:http_headers].inspect}") unless 
-          is_http_request
-      request_match = $~
-      case request_match[1]
-      when /GET/i
-        case request_match[2]
-        when /^\/$/
-          { "audio_queues" => with_all {|all| all.collect {|aq| aq.audio_file_url }} }
-        when /^\/(\d+)$/
-          id = $~[1].to_i
-          queue = All[id]
-          raise(NotFound, "Audio Queue ID #{id} not found") unless queue
-          { "audio_queue" => queue.to_h }
-        else
-          raise(NotFound, "Resource not found: #{request_match[1]} #{request_match[2]}")
-        end
-      when /PUT/i
-        case request_match[2]
-        when /^\/(\d+)\/([^\?\#\/]+)(\/([^\?\#\/]+)|)/
-          id = $~[1].to_i
-          queue = All[id]
-          raise(NotFound, "Audio Queue ID #{id} not found") unless queue
-          action = $~[2]
-          value = $~[4]
-          send_args = value ? ["#{action}=", value] : [action]
-          queue.send(*send_args)
-          { "audio_queue" => queue.to_h }
-        else
-          raise(NotFound, "Resource not found: #{request_match[1]} #{request_match[2]}")
-        end
-      else
-        raise(ArgumentError, "Unsupported HTTP verb: #{request_match[1]}")
-      end
-    end
-    
-    def open(audio_file_url)
-      @state.with_lock do
-        @audio_file_url = audio_file_url
-        open_audio_file_in_c @state, @audio_file_url
-        get_data_format_in_c @state
-        calculate_buffer
-        setup_packet_descriptions_in_c @state
-        @is_primed = false
-      end
-      self
-    end
-    
-    def prime
-      @state.with_lock do
-        new_output_in_c @state
-        set_magic_cookie_in_c @state
-        @state.is_running = 1
-        prime_buffers_in_c @state
-        @is_primed = true
-      end
-      self
-    end
-    
-    def play
-      prime unless @is_primed
-      @state.with_lock do
-        start_in_c @state
-        # TODO while @state.is_running > 0 do
-        #    CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
-        # end
-        # CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
-        # cleanup
-      end
-      self
-    end
-    
-    def pause
-      @state.with_lock do
-        pause_in_c @state
-        @state.is_running = 0
-      end
-      self
-    end
-    
-    def stop
-      @state.with_lock do
-        stop_in_c @state
-        @state.is_running = 0
-      end
-      self
-    end
-    
-    def cleanup
-      @state.with_lock do
-        return self if @state.is_running > 0
-        cleanup_in_c @state
-      end
-      self
     end
     
     inline(:C) do |builder|
@@ -233,14 +150,17 @@ module WaveHeart
       }
        
       builder.c %{ 
-        int cleanup_in_c(VALUE state) {
+        void cleanup_in_c(VALUE state) {
           AudioQueueState* aqState;
           Data_Get_Struct(state, AudioQueueState, aqState);
-          int mResultCode;
-          mResultCode = AudioQueueDispose(aqState->mQueue, true);
-          AudioFileClose(aqState->mAudioFile);
-          CFRelease(aqState->mRunLoop);
-          return mResultCode;
+          CheckError(AudioQueueDispose(
+            aqState->mQueue, true
+          ), "AudioQueueDispose failed");
+          CheckError(AudioFileClose(
+            aqState->mAudioFile
+          ), "AudioFileClose failed");
+          //CFRelease(aqState->mRunLoop);
+          return NULL;
         };
       }
        
@@ -298,7 +218,7 @@ module WaveHeart
             kAudioFilePropertyDataFormat,
             &dataFormatSize,
             &aqState->mDataFormat
-          ), "AudioFileGetProperty failed");
+          ), "AudioFileGetProperty kAudioFilePropertyDataFormat failed");
           aqState->mSampleRate = aqState->mDataFormat.mSampleRate;
           aqState->mFramesPerPacket = aqState->mDataFormat.mFramesPerPacket;
           aqState->mBytesPerPacket = aqState->mDataFormat.mBytesPerPacket;
@@ -447,6 +367,11 @@ module WaveHeart
           return NULL;
         };
       }
+    end
+    
+    # All inline-C (*_in_c) methods are private throughout WaveHeart.
+    instance_methods.each do |m|
+      private m.to_sym if /_in_c$/===m.to_s
     end
     
     # Calculate what to read as the audio queue drains.
