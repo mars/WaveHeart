@@ -53,6 +53,7 @@ module WaveHeart
           return self if @state.is_running < 1
           stop_in_c @state
           @state.is_running = 0
+          @is_primed = false
         end
         self
       end
