@@ -4,6 +4,7 @@ framework 'AppKit'
 framework 'AudioToolbox'
 
 require 'rubygems'
+require "bundler/setup"
 require 'inline'
 require 'multi_json'
 require 'eventmachine'
