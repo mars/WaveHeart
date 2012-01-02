@@ -34,6 +34,15 @@ module WaveHeart
       end
     end
     
+    def self.clear_all
+      with_all do |all|
+        all.each do |aq|
+          aq.stop.cleanup if aq.respond_to?(:stop)
+        end
+        all.slice!(0..-1)
+      end
+    end
+    
     AllLock = NSLock.alloc.init
     All = []
     

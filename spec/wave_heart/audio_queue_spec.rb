@@ -6,6 +6,10 @@ describe WaveHeart::AudioQueue, "#initialize" do
     @aq = WaveHeart::AudioQueue.new
   end
   
+  after(:all) do
+    WaveHeart::AudioQueue.clear_all
+  end
+  
   it "sets-up state" do
     @aq.should be_kind_of WaveHeart::AudioQueue
     @aq.state.should be_kind_of WaveHeart::AudioQueue::State
@@ -23,6 +27,10 @@ describe WaveHeart::AudioQueue, "#open" do
   before(:all) do
     @aq = WaveHeart::AudioQueue.new
     @aq.open('/System/Library/Sounds/Purr.aiff')
+  end
+  
+  after(:all) do
+    WaveHeart::AudioQueue.clear_all
   end
   
   it "gets properties for small CBR file" do
@@ -54,6 +62,10 @@ describe WaveHeart::AudioQueue, "#prime" do
     @aq.prime
   end
   
+  after(:all) do
+    WaveHeart::AudioQueue.clear_all
+  end
+  
   it "sets attribute flag" do
     @aq.is_primed.should be_true
   end
@@ -72,6 +84,10 @@ describe WaveHeart::AudioQueue::Parameters do
     @aq = WaveHeart::AudioQueue.new
     @aq.open('/System/Library/Sounds/Purr.aiff')
     @aq.prime
+  end
+  
+  after(:all) do
+    WaveHeart::AudioQueue.clear_all
   end
   
   it "sets and gets" do
