@@ -97,7 +97,7 @@ module WaveHeart
           UInt32 numBytes = 0;
           UInt32 numPackets = aqs->mNumPacketsToRead;
           
-          // fprintf(stderr, "Reading %d packets from position %lld in HandleOutputBuffer.\\n", numPackets, aqs->mCurrentPacket);
+          //fprintf(stderr, "Reading %d packets from position %lld in HandleOutputBuffer.\\n", numPackets, aqs->mCurrentPacket);
           
           CheckError(AudioFileReadPackets(
             aqs->mAudioFile,
@@ -111,14 +111,23 @@ module WaveHeart
           
           if (numPackets > 0) {
             inBuffer->mAudioDataByteSize = numBytes;
+            //fprintf(stderr, "Enqueuing buffer of %d bytes.\\n", numBytes);
             CheckError(AudioQueueEnqueueBuffer( 
               aqs->mQueue,
               inBuffer,
               (aqs->mPacketDescs ? numPackets : 0),
               aqs->mPacketDescs
             ), "HandleOutputBuffer AudioQueueEnqueueBuffer failed");
+            if (aqs->mCurrentPacket < 1) {
+              CheckError(AudioQueuePrime( 
+                aqs->mQueue,
+                0,
+                NULL
+              ), "HandleOutputBuffer AudioQueuePrime failed");
+            }
             aqs->mCurrentPacket += numPackets;
           } else {
+            //fprintf(stderr, "No more packets.\\n");
             AudioQueueStop(aqs->mQueue, false);
             aqs->mIsRunning = 0; 
           }

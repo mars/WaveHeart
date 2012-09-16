@@ -31,11 +31,6 @@ module WaveHeart
         prime unless @is_primed
         @state.with_lock do
           start_in_c @state
-          # TODO while @state.is_running > 0 do
-          #    CFRunLoopRunInMode(KCFRunLoopDefaultMode, 0.25, false)
-          # end
-          # CFRunLoopRunInMode(KCFRunLoopDefaultMode, 1, false)
-          # cleanup
         end
         self
       end
@@ -43,7 +38,6 @@ module WaveHeart
       def pause
         @state.with_lock do
           pause_in_c @state
-          @state.is_running = 0
         end
         self
       end
