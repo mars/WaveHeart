@@ -6,23 +6,17 @@ framework 'AudioToolbox'
 require 'rubygems'
 require "bundler/setup"
 require 'inline'
-require 'multi_json'
-require 'eventmachine'
-require 'evma_httpserver'
 
 require "wave_heart/audio_queue/operations"
 require "wave_heart/audio_queue/parameters"
 require "wave_heart/audio_queue/state"
 require "wave_heart/audio_queue"
-require "wave_heart/reactor/http_server"
-require "wave_heart/reactor"
 
 module WaveHeart
   class AppDelegate
     attr_reader :reactor
     
     def applicationDidFinishLaunching(notification)
-      @reactor = WaveHeart::Reactor.start
       #aq = AudioQueue.new('/Users/Shared/Jukebox/Music/Air/Talkie Walkie/10 Alone in Kyoto.m4a').play
       #aq2 = AudioQueue.new('/Users/Shared/Jukebox/Music/Kodo/sai-so/03 Wax Off.mp3').play
       #aq3 = AudioQueue.new('/System/Library/Sounds/Sosumi.aiff').play
