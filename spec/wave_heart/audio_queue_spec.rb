@@ -78,6 +78,24 @@ describe WaveHeart::AudioQueue, "#prime" do
   
 end
 
+describe WaveHeart::AudioQueue, "#play" do
+  
+  before(:all) do
+    @aq = WaveHeart::AudioQueue.new
+  end
+  
+  after(:all) do
+    WaveHeart::AudioQueue.clear_all
+  end
+  
+  it "runs the queue then stops" do
+    @aq.open('/System/Library/Sounds/Purr.aiff')
+    @aq.play
+    @aq.state.is_running.should == 0
+  end
+  
+end
+
 describe WaveHeart::AudioQueue::Parameters do
   
   before(:all) do
