@@ -12,6 +12,8 @@ require "wave_heart/audio_queue/parameters"
 require "wave_heart/audio_queue/state"
 require "wave_heart/audio_queue"
 
+require "wave_heart/source"
+
 module WaveHeart
   class AppDelegate
     attr_reader :reactor
